@@ -1,0 +1,12 @@
+#!/bin/sh -e
+
+export BUILD_TYPE=${BUILD_TYPE:-RelWithDebInfo}
+
+./build $@ || true
+
+inotifywait -r -e CLOSE_WRITE -m src sample | \
+	while read path action file
+	do
+		clear
+		./build $@ || true
+	done

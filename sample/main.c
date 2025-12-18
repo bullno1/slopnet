@@ -25,9 +25,11 @@ main(int argc, const char* argv[]) {
 		while ((snet_event = snet_next_event(snet)) != NULL) {
 			switch (snet_event->type) {
 				case SNET_EVENT_LOGIN_FINISHED:
-					if (snet_event->login.status == SNET_ERR_IO) {
+					if (snet_event->login.status == SNET_OK) {
+						fprintf(stderr, "Logged in with token: %s\n", (char*)snet_event->login.data.ptr);
+					} else if (snet_event->login.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
-					} else {
+					} else if (snet_event->login.status == SNET_ERR_REJECTED) {
 						fprintf(stderr, "Login failed with reason: %s\n", (char*)snet_event->login.data.ptr);
 					}
 					break;

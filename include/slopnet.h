@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 typedef struct snet_s snet_t;
 
@@ -10,8 +11,13 @@ typedef struct {
 	const char* host;
 	const char* path;
 	int port;
+
 	void* (*realloc)(void* ptr, size_t size, void* memctx);
 	void* memctx;
+
+	void (*log)(const char* fmt, va_list args, void* logctx);
+	void* logctx;
+
 	bool insecure_tls;
 } snet_config_t;
 
@@ -24,7 +30,8 @@ typedef enum {
 	SNET_EVENT_LOGIN_FINISHED,
 	SNET_EVENT_CREATE_GAME_FINISHED,
 	SNET_EVENT_LIST_GAMES_FINISHED,
-	SNET_EVENT_JOIN_GAME_FINISHED, SNET_EVENT_EXIT_GAME_FINISHED,
+	SNET_EVENT_JOIN_GAME_FINISHED,
+	SNET_EVENT_EXIT_GAME_FINISHED,
 	SNET_EVENT_PLAYER_JOINED,
 	SNET_EVENT_PLAYER_LEFT,
 	SNET_EVENT_MESSAGE,
@@ -86,7 +93,6 @@ typedef struct {
 
 typedef enum {
 	SNET_DISCONNECT_EXIT,
-	SNET_DISCONNECT_HOST_LEFT,
 	SNET_DISCONNECT_KICKED,
 	SNET_DISCONNECT_ERR,
 } snet_disconnect_reason_t;

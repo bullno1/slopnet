@@ -59,6 +59,16 @@ snet_free(snet_t* snet, void* ptr) {
 	return snet_realloc(snet, ptr, 0);
 }
 
+static inline void
+snet_log(snet_t* snet, const char* fmt, ...) {
+	if (snet->config.log == NULL) { return; }
+
+	va_list args;
+	va_start(args, fmt);
+	snet->config.log(fmt, args, snet->config.logctx);
+	va_end(args);
+}
+
 static inline void*
 snet_buf_ensure(snet_t* snet, snet_buf_t* buf, size_t capacity) {
 	if (capacity > buf->capacity) {
@@ -83,12 +93,17 @@ snet_vprintf(snet_t* snet, snet_buf_t* buf, const char* fmt, va_list args) {
 }
 
 static inline const char*
-snet_url(snet_t* snet, const char* fmt, ...) {
+snet_printf(snet_t* snet, const char* fmt, ...) {
 	va_list args;
 	va_start(args, fmt);
 	const char* result = snet_vprintf(snet, &snet->tmp_url_buf, fmt, args);
 	va_end(args);
 	return result;
+}
+
+static inline const char*
+snet_path(snet_t* snet, const char* path) {
+	return snet_printf(snet, "%s%s", snet->config.path, path);
 }
 
 static inline snet_blob_t
@@ -138,7 +153,7 @@ snet_httpd(struct wby_con* conn, void* userdata) {
 		struct wby_header headers[] = {
 			{
 				.name = "location",
-				.value = snet_url(snet, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
+				.value = snet_printf(snet, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
 			}
 		};
 		wby_response_begin(conn, 303, 0, headers, sizeof(headers) / sizeof(headers[0]));
@@ -159,7 +174,7 @@ snet_httpd(struct wby_con* conn, void* userdata) {
 		struct wby_header headers[] = {
 			{
 				.name = "location",
-				.value = snet_url(snet, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
+				.value = snet_printf(snet, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
 			}
 		};
 		wby_response_begin(conn, 303, 0, headers, sizeof(headers) / sizeof(headers[0]));
@@ -253,8 +268,11 @@ snet_next_event(snet_t* snet) {
 		snet_op_status_t status = SNET_ERR_IO;
 		snet->auth_state = SNET_UNAUTHORIZED;
 		snet->login_data.size = 0;
+		snet_log(snet, "HTTP result: %s", cf_https_result_to_string(snet->http_login_result));
 		if (snet->http_login_result == CF_HTTPS_RESULT_OK) {
 			snet->login_data = snet_response_body(snet, resp, &snet->login_buf);
+			int status_code = cf_https_response_code(resp);
+			snet_log(snet, "Status code: %d", status_code);
 			status = cf_https_response_code(resp) == 200 ? SNET_OK : SNET_ERR_REJECTED;
 			if (status == SNET_OK) {
 				snet_buf_ensure(snet, &snet->cookie_buf, snet->login_data.size + 1);
@@ -302,6 +320,16 @@ snet_auth_state(snet_t* snet) {
 
 void
 snet_login_with_cookie(snet_t* snet, snet_blob_t cookie) {
+	if (snet->auth_state == SNET_AUTHORIZING) { return; }
+
+	snet->http_login_state = SNET_OP_PENDING;
+	snet->auth_state = SNET_AUTHORIZING;
+	snet->http_login_req = cf_https_post(
+		snet->config.host, snet->config.port,
+		snet_path(snet, "/auth/cookie"),
+		cookie.ptr, cookie.size,
+		!snet->config.insecure_tls
+	);
 }
 
 void
@@ -315,13 +343,13 @@ snet_login_with_itchio(snet_t* snet) {
 
 	snet->auth_state = SNET_AUTHORIZING;
 	snet->oauth_login_state = SNET_OP_PENDING;
-	SDL_OpenURL(
-		snet_url(
-			snet,
-			SNET_URL_FMT_PREFIX "/auth/itchio/start?app_port=%d",
-			SNET_URL_FMT_PREFIX_ARGS(snet), snet->httpd.config.port
-		)
+	const char* url = snet_printf(
+		snet,
+		SNET_URL_FMT_PREFIX "/auth/itchio/start?app_port=%d",
+		SNET_URL_FMT_PREFIX_ARGS(snet), snet->httpd.config.port
 	);
+	snet_log(snet, "Opening %s", url);
+	SDL_OpenURL(url);
 }
 
 #define WBY_IMPLEMENTATION

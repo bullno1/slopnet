@@ -2,8 +2,16 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <cute_https.h>
 #include <cute_json.h>
+#include <SDL3/SDL_misc.h>
+#define WBY_STATIC
+#include "wby.h"
+
+#define SNET_URL_FMT_PREFIX "https://%s:%d%s"
+#define SNET_URL_FMT_PREFIX_ARGS(snet) (snet)->config.host, (snet)->config.port, (snet)->config.path
+#define SNET_MAX_COOKIE_SIZE 2048
 
 typedef struct {
 	void* ptr;
@@ -25,14 +33,21 @@ struct snet_s {
 	snet_buf_t path_buf;
 	snet_buf_t login_buf;
 	snet_buf_t cookie_buf;
+	snet_buf_t tmp_url_buf;
 	snet_blob_t login_data;
 	snet_blob_t cookie;
 
 	char* login_body;
 
-	CF_HttpsRequest login_req;
-	CF_HttpsResult login_result;
-	snet_op_state_t login_state;
+	struct wby_server httpd;
+	void* httpd_memory;
+
+	CF_HttpsRequest http_login_req;
+	CF_HttpsResult http_login_result;
+	snet_op_state_t http_login_state;
+
+	snet_op_state_t oauth_login_state;
+	snet_op_status_t oauth_login_status;
 };
 
 static inline void* snet_realloc(snet_t* snet, void* ptr, size_t size) {
@@ -55,14 +70,25 @@ snet_buf_ensure(snet_t* snet, snet_buf_t* buf, size_t capacity) {
 }
 
 static inline const char*
-snet_path(snet_t* snet, const char* path) {
-	int size = snprintf(snet->path_buf.ptr, snet->path_buf.capacity, "%s/%s", snet->config.path, path);
-	if ((size_t)size > snet->path_buf.capacity) {
-		snet_buf_ensure(snet, &snet->path_buf, size + 1);
-		snprintf(snet->path_buf.ptr, snet->path_buf.capacity, "%s/%s", snet->config.path, path);
+snet_vprintf(snet_t* snet, snet_buf_t* buf, const char* fmt, va_list args) {
+	va_list args_copy;
+	va_copy(args_copy, args);
+	size_t size = (size_t)vsnprintf(buf->ptr, buf->capacity, fmt, args);
+	if (size > buf->capacity) {
+		snet_buf_ensure(snet, buf, size + 1);
+		vsnprintf(buf->ptr, size + 1, fmt, args_copy);
 	}
+	va_end(args_copy);
+	return buf->ptr;
+}
 
-	return snet->path_buf.ptr;
+static inline const char*
+snet_url(snet_t* snet, const char* fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	const char* result = snet_vprintf(snet, &snet->tmp_url_buf, fmt, args);
+	va_end(args);
+	return result;
 }
 
 static inline snet_blob_t
@@ -95,6 +121,60 @@ snet_stdlib_realloc(void* ptr, size_t size, void* memctx) {
 	}
 }
 
+static int
+snet_httpd(struct wby_con* conn, void* userdata) {
+	snet_t* snet = userdata;
+	if (strcmp(conn->request.uri, "/succeeded") == 0) {
+		int size = wby_find_query_var(
+			conn->request.query_params, "data",
+			snet_buf_ensure(snet, &snet->cookie_buf, SNET_MAX_COOKIE_SIZE), SNET_MAX_COOKIE_SIZE
+		);
+		if (size < 0) { return 1; }
+		((char*)snet->cookie_buf.ptr)[size] = '\0';
+
+		snet->cookie.ptr = snet->cookie_buf.ptr;
+		snet->cookie.size = snet->login_data.size;
+
+		struct wby_header headers[] = {
+			{
+				.name = "location",
+				.value = snet_url(snet, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
+			}
+		};
+		wby_response_begin(conn, 303, 0, headers, sizeof(headers) / sizeof(headers[0]));
+		wby_response_end(conn);
+		snet->oauth_login_state = SNET_OP_FINISHED;
+		snet->oauth_login_status = SNET_OK;
+		snet->login_data.ptr = snet->cookie_buf.ptr;
+		snet->login_data.size = size;
+		snet->auth_state = SNET_AUTHORIZED;
+		return 0;
+	} else if (strcmp(conn->request.uri, "/failed") == 0) {
+		int size = wby_find_query_var(
+			conn->request.query_params, "data",
+			snet_buf_ensure(snet, &snet->login_buf, SNET_MAX_COOKIE_SIZE), SNET_MAX_COOKIE_SIZE
+		);
+		if (size < 0) { return 1; }
+
+		struct wby_header headers[] = {
+			{
+				.name = "location",
+				.value = snet_url(snet, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
+			}
+		};
+		wby_response_begin(conn, 303, 0, headers, sizeof(headers) / sizeof(headers[0]));
+		wby_response_end(conn);
+		snet->oauth_login_state = SNET_OP_FINISHED;
+		snet->oauth_login_status = SNET_ERR_REJECTED;
+		snet->login_data.ptr = snet->login_buf.ptr;
+		snet->login_data.size = size;
+		snet->auth_state = SNET_UNAUTHORIZED;
+		return 0;
+	} else {
+		return 1;
+	}
+}
+
 snet_t*
 snet_init(const snet_config_t* config_in) {
 	snet_config_t config = { 0 };
@@ -119,6 +199,22 @@ snet_init(const snet_config_t* config_in) {
 		.config = config,
 	};
 
+	struct wby_config httpd_config = {
+		.address = "127.0.0.1",
+		.connection_max = 4,
+		.request_buffer_size = 4096,
+		.io_buffer_size = 4096,
+		.dispatch = snet_httpd,
+		.userdata = snet,
+	};
+	wby_size httpd_memory_size;
+	wby_init(&snet->httpd, &httpd_config, &httpd_memory_size);
+	snet->httpd_memory = snet_realloc(snet, snet->httpd_memory, httpd_memory_size);
+	(void)wby_find_conn;
+	(void)wby_frame_begin;
+	(void)wby_frame_end;
+	(void)wby_read;
+
 	return snet;
 }
 
@@ -127,6 +223,8 @@ snet_cleanup(snet_t* snet) {
 	snet_free(snet, snet->path_buf.ptr);
 	snet_free(snet, snet->login_buf.ptr);
 	snet_free(snet, snet->cookie_buf.ptr);
+	snet_free(snet, snet->tmp_url_buf.ptr);
+	snet_free(snet, snet->httpd_memory);
 	sfree(snet->login_body);
 	snet_free(snet, snet);
 }
@@ -134,21 +232,28 @@ snet_cleanup(snet_t* snet) {
 void
 snet_update(snet_t* snet) {
 	if (
-		snet->login_state == SNET_OP_PENDING
+		snet->http_login_state == SNET_OP_PENDING
 		&&
-		((snet->login_result = cf_https_process(snet->login_req)) != CF_HTTPS_RESULT_PENDING)
+		((snet->http_login_result = cf_https_process(snet->http_login_req)) != CF_HTTPS_RESULT_PENDING)
 	) {
-		snet->login_state = SNET_OP_FINISHED;
+		snet->http_login_state = SNET_OP_FINISHED;
+	}
+
+	if (
+		snet->oauth_login_state == SNET_OP_PENDING
+	) {
+		wby_update(&snet->httpd, 0);
 	}
 }
 
 const snet_event_t*
 snet_next_event(snet_t* snet) {
-	if (snet->login_state == SNET_OP_FINISHED) {
-		CF_HttpsResponse resp = cf_https_response(snet->login_req);
+	if (snet->http_login_state == SNET_OP_FINISHED) {
+		CF_HttpsResponse resp = cf_https_response(snet->http_login_req);
 		snet_op_status_t status = SNET_ERR_IO;
 		snet->auth_state = SNET_UNAUTHORIZED;
-		if (snet->login_result == CF_HTTPS_RESULT_OK) {
+		snet->login_data.size = 0;
+		if (snet->http_login_result == CF_HTTPS_RESULT_OK) {
 			snet->login_data = snet_response_body(snet, resp, &snet->login_buf);
 			status = cf_https_response_code(resp) == 200 ? SNET_OK : SNET_ERR_REJECTED;
 			if (status == SNET_OK) {
@@ -160,15 +265,29 @@ snet_next_event(snet_t* snet) {
 				snet->auth_state = SNET_AUTHORIZED;
 			}
 		}
-		cf_https_destroy(snet->login_req);
-		snet->login_req.id = 0;
-		snet->login_state = SNET_OP_RETURNED;
+		cf_https_destroy(snet->http_login_req);
+		snet->http_login_req.id = 0;
+		snet->http_login_state = SNET_OP_RETURNED;
 		sfree(snet->login_body);
 
 		return snet_event(snet, &(snet_event_t){
 			.type = SNET_EVENT_LOGIN_FINISHED,
 			.login = {
 				.status = status,
+				.data = snet->login_data,
+			},
+		});
+	}
+
+	if (snet->oauth_login_state == SNET_OP_FINISHED) {
+		snet->oauth_login_state = SNET_OP_RETURNED;
+		wby_stop(&snet->httpd);
+
+		return snet_event(snet, &(snet_event_t){
+			.type = SNET_EVENT_LOGIN_FINISHED,
+			.login = {
+				.status = snet->oauth_login_status,
+				.data = snet->login_data,
 			},
 		});
 	}
@@ -183,32 +302,27 @@ snet_auth_state(snet_t* snet) {
 
 void
 snet_login_with_cookie(snet_t* snet, snet_blob_t cookie) {
-	if (snet->login_state != SNET_OP_RETURNED) {
-		cf_https_destroy(snet->login_req);
-	}
 }
 
 void
-snet_login_with_userpass(snet_t* snet, snet_blob_t username, snet_blob_t password) {
-	if (snet->login_state != SNET_OP_RETURNED) {
-		cf_https_destroy(snet->login_req);
-		sfree(snet->login_body);
+snet_login_with_itchio(snet_t* snet) {
+	if (snet->auth_state == SNET_AUTHORIZING) { return; }
+
+	snet->httpd.config.port = 0;  // Always use a random port
+	if (wby_start(&snet->httpd, snet->httpd_memory) != WBY_OK) {
+		return;
 	}
 
-	CF_JDoc body = cf_make_json(NULL, 0);
-	CF_JVal root = cf_json_object(body);
-	cf_json_set_root(body, root);
-	cf_json_object_add_string_range(body, root, "username", username.ptr, (char*)username.ptr + username.size);
-	cf_json_object_add_string_range(body, root, "password", password.ptr, (char*)password.ptr + password.size);
-	snet->login_body = cf_json_to_string_minimal(body);
-	cf_destroy_json(body);
-
-	snet->login_state = SNET_OP_PENDING;
-	snet->login_req = cf_https_post(
-		snet->config.host, snet->config.port,
-		snet_path(snet, "login/userpass"),
-		snet->login_body, strlen(snet->login_body),
-		!snet->config.insecure_tls
-	);
 	snet->auth_state = SNET_AUTHORIZING;
+	snet->oauth_login_state = SNET_OP_PENDING;
+	SDL_OpenURL(
+		snet_url(
+			snet,
+			SNET_URL_FMT_PREFIX "/auth/itchio/start?app_port=%d",
+			SNET_URL_FMT_PREFIX_ARGS(snet), snet->httpd.config.port
+		)
+	);
 }
+
+#define WBY_IMPLEMENTATION
+#include "wby.h"

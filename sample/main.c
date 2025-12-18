@@ -17,9 +17,6 @@ main(int argc, const char* argv[]) {
 	};
 	snet_t* snet = snet_init(&snet_config);
 
-	char username_buf[128] = { 0 };
-	char password_buf[128] = { 0 };
-
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
 
@@ -31,7 +28,7 @@ main(int argc, const char* argv[]) {
 					if (snet_event->login.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
 					} else {
-						fprintf(stderr, "Invalid credentials\n");
+						fprintf(stderr, "Login failed with reason: %s\n", (char*)snet_event->login.data.ptr);
 					}
 					break;
 				default:
@@ -44,21 +41,8 @@ main(int argc, const char* argv[]) {
 
 			switch (snet_auth_state(snet)) {
 				case SNET_UNAUTHORIZED: {
-					ImGui_InputText("Username", username_buf, sizeof(username_buf), 0);
-					ImGui_InputText("Password", password_buf, sizeof(password_buf), ImGuiInputTextFlags_Password);
-
-					if (ImGui_Button("Login")) {
-						snet_login_with_userpass(
-							snet,
-							(snet_blob_t){
-								.ptr = username_buf,
-								.size = strlen(username_buf),
-							},
-							(snet_blob_t){
-								.ptr = password_buf,
-								.size = strlen(password_buf),
-							}
-						);
+					if (ImGui_Button("Login with itch.io")) {
+						snet_login_with_itchio(snet);
 					}
 				} break;
 				case SNET_AUTHORIZING: {

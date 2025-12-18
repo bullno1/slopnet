@@ -135,9 +135,6 @@ void
 snet_login_with_itchio(snet_t* snet);
 
 void
-snet_login_with_userpass(snet_t* snet, snet_blob_t username, snet_blob_t password);
-
-void
 snet_create_game(snet_t* snet, int max_players, snet_blob_t data);
 
 void

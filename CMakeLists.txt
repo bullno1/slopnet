@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(cute-video-player)
+project(slopnet)
 
 # Fix output dir
 set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR})

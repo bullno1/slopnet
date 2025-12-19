@@ -11,14 +11,16 @@ snet_log(const char* fmt, va_list args, void* ctx) {
 
 int
 main(int argc, const char* argv[]) {
-	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT;
-	cf_make_app("slopnet demo", 0, 0, 0, 800, 600, options, argv[0]);
-	cf_app_set_vsync(true);
-	cf_fs_mount(cf_fs_get_working_directory(), "/", true);
+	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT | CF_APP_OPTIONS_FILE_SYSTEM_DONT_DEFAULT_MOUNT_BIT;
+	if (cf_is_error(cf_make_app("slopnet demo", 0, 0, 0, 800, 600, options, argv[0]))) {
+		return 1;
+	}
+
 	const char* user_dir = cf_fs_get_user_directory("bullno1", "slopnet-demo");
 	cf_fs_set_write_directory(user_dir);
 	cf_fs_mount(user_dir, "/user/", true);
 
+	cf_app_set_vsync(true);
 	cf_app_init_imgui();
 
 	snet_config_t snet_config = {
@@ -71,6 +73,13 @@ main(int argc, const char* argv[]) {
 				} break;
 				case SNET_AUTHORIZED: {
 					ImGui_LabelText("Status", "Logged in");
+
+					if (ImGui_Button("Create game")) {
+						snet_create_game(snet, &(snet_game_options_t){
+							.visibility = SNET_GAME_PUBLIC,
+							.max_num_players = 4,
+						});
+					}
 				} break;
 			}
 		}

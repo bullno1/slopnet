@@ -12,9 +12,6 @@ typedef struct {
 	const char* path;
 	int port;
 
-	void* (*realloc)(void* ptr, size_t size, void* memctx);
-	void* memctx;
-
 	void (*log)(const char* fmt, va_list args, void* logctx);
 	void* logctx;
 
@@ -55,22 +52,29 @@ typedef struct {
 	snet_blob_t data;
 } snet_login_result_t;
 
-typedef struct {
-	snet_op_status_t status;
-	snet_blob_t data;
-} snet_create_game_result_t;
+typedef enum {
+	SNET_IN_LOBBY,
+	SNET_LISTING_GAMES,
+	SNET_CREATING_GAME,
+	SNET_JOINING_GAME,
+	SNET_JOINED_GAME,
+} snet_lobby_state_t;
 
 typedef struct {
-	int id;
-	snet_blob_t host;
+	snet_blob_t join_token;
 	snet_blob_t data;
 } snet_game_info_t;
 
 typedef struct {
 	snet_op_status_t status;
-	size_t num_games;
+	int num_games;
 	const snet_game_info_t* games;
 } snet_list_games_result_t;
+
+typedef struct {
+	snet_op_status_t status;
+	snet_game_info_t info;
+} snet_create_game_result_t;
 
 typedef struct {
 	snet_op_status_t status;
@@ -87,7 +91,6 @@ typedef struct {
 } snet_player_left_t;
 
 typedef struct {
-	int sender;
 	snet_blob_t data;
 } snet_message_t;
 
@@ -101,6 +104,17 @@ typedef struct {
 	snet_disconnect_reason_t reason;
 } snet_disconnected_t;
 
+typedef enum {
+	SNET_GAME_PUBLIC,
+	SNET_GAME_PRIVATE,
+} snet_game_visibility_t;
+
+typedef struct {
+	snet_game_visibility_t visibility;
+	int max_num_players;
+	snet_blob_t data;
+} snet_game_options_t;
+
 typedef struct {
 	snet_event_type_t type;
 
@@ -109,8 +123,6 @@ typedef struct {
 		snet_create_game_result_t create_game;
 		snet_list_games_result_t list_games;
 		snet_join_game_result_t join_game;
-		snet_player_joined_t player_joined;
-		snet_player_left_t player_left;
 		snet_message_t message;
 		snet_disconnected_t disconnected;
 	};
@@ -131,6 +143,9 @@ snet_next_event(snet_t* snet);
 snet_auth_state_t
 snet_auth_state(snet_t* snet);
 
+snet_lobby_state_t
+snet_lobby_state(snet_t* snet);
+
 void
 snet_login_with_cookie(snet_t* snet, snet_blob_t cookie);
 
@@ -141,10 +156,10 @@ void
 snet_login_with_itchio(snet_t* snet);
 
 void
-snet_create_game(snet_t* snet, int max_players, snet_blob_t data);
+snet_create_game(snet_t* snet, const snet_game_options_t* options);
 
 void
-snet_list_games(snet_t* snet, snet_blob_t filter);
+snet_list_games(snet_t* snet);
 
 void
 snet_join_game(snet_t* snet, int id);

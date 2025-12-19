@@ -4,7 +4,7 @@ export BUILD_TYPE=${BUILD_TYPE:-RelWithDebInfo}
 
 ./build $@ || true
 
-inotifywait -r -e CLOSE_WRITE -m src sample | \
+inotifywait -r -e CLOSE_WRITE -m include src sample | \
 	while read path action file
 	do
 		clear

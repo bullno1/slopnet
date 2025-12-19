@@ -72,13 +72,29 @@ main(int argc, const char* argv[]) {
 					ImGui_LabelText("Status", "Logging in");
 				} break;
 				case SNET_AUTHORIZED: {
-					ImGui_LabelText("Status", "Logged in");
+					switch (snet_lobby_state(snet)) {
+						case SNET_IN_LOBBY: {
+							ImGui_LabelText("Status", "In lobby");
 
-					if (ImGui_Button("Create game")) {
-						snet_create_game(snet, &(snet_game_options_t){
-							.visibility = SNET_GAME_PUBLIC,
-							.max_num_players = 4,
-						});
+							if (ImGui_Button("Create game")) {
+								snet_create_game(snet, &(snet_game_options_t){
+									.visibility = SNET_GAME_PUBLIC,
+									.max_num_players = 4,
+								});
+							}
+						} break;
+						case SNET_LISTING_GAMES: {
+							ImGui_LabelText("Status", "Finding games");
+						} break;
+						case SNET_CREATING_GAME: {
+							ImGui_LabelText("Status", "Creating game");
+						} break;
+						case SNET_JOINING_GAME: {
+							ImGui_LabelText("Status", "Joining game");
+						} break;
+						case SNET_JOINED_GAME: {
+							ImGui_LabelText("Status", "In game");
+						} break;
 					}
 				} break;
 			}

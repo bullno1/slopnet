@@ -73,11 +73,15 @@ typedef struct {
 
 typedef struct {
 	snet_op_status_t status;
-	snet_game_info_t info;
+	union {
+		snet_game_info_t info;
+		snet_blob_t error;
+	};
 } snet_create_game_result_t;
 
 typedef struct {
 	snet_op_status_t status;
+	snet_blob_t error;
 } snet_join_game_result_t;
 
 typedef struct {

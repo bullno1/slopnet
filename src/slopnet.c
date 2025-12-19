@@ -94,7 +94,7 @@ snet_task_wrapper(CF_Coroutine coro) {
 }
 
 static void
-snet_task_begin(snet_t* snet, snet_task_t* task, snet_task_fn_t fn, void* arg, size_t arg_size) {
+snet_task_begin(snet_t* snet, snet_task_t* task, snet_task_fn_t fn, const void* arg, size_t arg_size) {
 	snet_task_end(task);
 
 	void* arg_copy = NULL;
@@ -148,7 +148,6 @@ snet_task_init(snet_t* snet, snet_task_t* task) {
 static void
 snet_task_cleanup(snet_task_t* task) {
 	snet_task_end(task);
-	barena_reset(&task->arena);
 }
 
 static inline void*
@@ -215,8 +214,10 @@ snet_init(const snet_config_t* config_in) {
 	*snet = (snet_t){
 		.config = config,
 	};
+
 	barena_pool_init(&snet->arena_pool, 1);
 	(void)barena_snapshot;
+
 	snet_task_init(snet, &snet->background_task);
 
 	return snet;
@@ -434,29 +435,120 @@ snet_login_with_itchio(snet_t* snet) {
 
 /// }}}
 
+static snet_fetch_header_t
+snet_auth_header(const snet_task_env_t* env, snet_t* snet) {
+	return (snet_fetch_header_t){
+		.name = "Authorization",
+		.value = snet_printf(env, "Bearer %s", snet->cookie_buf),
+	};
+}
+
+static snet_blob_t
+snet_strcpy(const snet_task_env_t* env, const char* str) {
+	if (str == NULL) { return (snet_blob_t){ 0 }; }
+	size_t len = strlen(str);
+	char* copy = snet_task_alloc(env, len + 1);
+	memcpy(copy, str, len + 1);
+	return (snet_blob_t){
+		.ptr = copy,
+		.size = len,
+	};
+}
+
+static void
+snet_task_create_game(const snet_task_env_t* env) {
+	SNET_TASK_ARG(snet_game_options_t, options);
+
+	CF_JDoc doc = cf_make_json(NULL, 0);
+	CF_JVal req = cf_json_object(doc);
+	cf_json_set_root(doc, req);
+	cf_json_object_add_string(doc, req, "visibility", options.visibility == SNET_GAME_PUBLIC ? "public" : "private");
+	cf_json_object_add_int(doc, req, "max_num_players", options.max_num_players);
+	if (options.data.ptr) {
+		cf_json_object_add_string_range(doc, req, "data", options.data.ptr, (char*)options.data.ptr + options.data.size);
+	}
+	dyna char* body = cf_json_to_string(doc);
+	cf_destroy_json(doc);
+
+	snet_t* snet = env->snet;
+	snet->lobby_state = SNET_CREATING_GAME;
+	snet_fetch_t* fetch = snet_fetch_begin(&(snet_fetch_options_t){
+		.method = SNET_FETCH_POST,
+		.host = snet->config.host,
+		.port = snet->config.port,
+		.path = snet_printf(env, "%s%s", snet->config.path, "/game/create"),
+		.verify_tls = !snet->config.insecure_tls,
+
+		.headers = (snet_fetch_header_t[]){
+			snet_auth_header(env, snet),
+			{ 0 }
+		},
+
+		.content = body, .content_length = slen(body),
+	});
+
+	snet_fetch_status_t fetch_status;
+	while (true) {
+		if (snet_task_cancelled(env)) { goto end; }
+
+		if ((fetch_status = snet_fetch_process(fetch)) != SNET_FETCH_PENDING) {
+			break;
+		}
+		snet_task_yield(env);
+	}
+
+	snet_log(snet, "fetch status: %d", fetch_status);
+	if (fetch_status == SNET_FETCH_FINISHED) {
+		int status_code = snet_fetch_status_code(fetch);
+		snet_log(snet, "status code: %d", status_code);
+		size_t body_size;
+		const void* resp_body = snet_fetch_response_body(fetch, &body_size);
+		if (status_code == 200) {
+			CF_JDoc resp = cf_make_json(resp_body, body_size);
+			CF_JVal root = cf_json_get_root(resp);
+
+			snet->lobby_state = SNET_JOINED_GAME;
+			snet_task_post(env, &(snet_event_t){
+				.type = SNET_EVENT_CREATE_GAME_FINISHED,
+				.create_game = {
+					.status = SNET_OK,
+					.info = {
+						.join_token = snet_strcpy(env, cf_json_get_string(cf_json_get(root, "join_token"))),
+						.data = snet_strcpy(env, cf_json_get_string(cf_json_get(root, "data"))),
+					}
+				},
+			});
+
+			cf_destroy_json(resp);
+		} else {
+			void* body_copy = snet_task_alloc(env, body_size);
+			memcpy(body_copy, body, body_size);
+
+			snet->lobby_state = SNET_IN_LOBBY;
+			snet_task_post(env, &(snet_event_t){
+				.type = SNET_EVENT_CREATE_GAME_FINISHED,
+				.create_game = {
+					.status = SNET_ERR_REJECTED,
+					.error = { .ptr = body_copy, .size = body_size },
+				},
+			});
+		}
+	} else {
+		snet->lobby_state = SNET_IN_LOBBY;
+		snet_task_post(env, &(snet_event_t){
+			.type = SNET_EVENT_CREATE_GAME_FINISHED,
+			.create_game = { .status = SNET_ERR_IO },
+		});
+	}
+
+end:
+	snet_fetch_end(fetch);
+	sfree(body);
+}
+
 void
 snet_create_game(snet_t* snet, const snet_game_options_t* options) {
-	/*if (snet->lobby_state != SNET_IN_LOBBY) { return; }*/
-
-	/*afree(snet->lobby_body);*/
-	/*CF_JDoc doc = cf_make_json(NULL, 0);*/
-	/*CF_JVal req = cf_json_object(doc);*/
-	/*cf_json_set_root(doc, req);*/
-	/*cf_json_object_add_string(doc, req, "visibility", options->visibility == SNET_GAME_PUBLIC ? "public" : "private");*/
-	/*cf_json_object_add_int(doc, req, "max_num_players", options->max_num_players);*/
-	/*cf_json_object_add_string_range(doc, req, "data", options->data.ptr, (char*)options->data.ptr + options->data.size);*/
-	/*snet->lobby_body = cf_json_to_string(doc);*/
-	/*cf_destroy_json(doc);*/
-
-	/*snet->lobby_state = SNET_CREATING_GAME;*/
-	/*snet->http_lobby.state = SNET_OP_PENDING;*/
-	/*snet->http_lobby.request = cf_https_post(*/
-		/*snet->config.host, snet->config.port,*/
-		/*snet_path(snet, "/lobby/create"),*/
-		/*snet->lobby_body, alen(snet->lobby_body),*/
-		/*!snet->config.insecure_tls*/
-	/*);*/
-	/*cf_https_add_header(snet->http_lobby.request, "Authorization", snet->auth_header_buf.ptr);*/
+	snet_task_begin(snet, &snet->background_task, snet_task_create_game, options, sizeof(*options));
 }
 
 #define WBY_IMPLEMENTATION

@@ -4,10 +4,13 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <time.h>
 #include <cute_json.h>
 #include <cute_coroutine.h>
 #include <cute_alloc.h>
 #include <cute_array.h>
+#include <cute_networking.h>
+#include <cute_time.h>
 #include <SDL3/SDL_misc.h>
 #define BARENA_API static
 #include "barena.h"
@@ -51,9 +54,13 @@ struct snet_s {
 	snet_auth_state_t auth_state;
 	snet_lobby_state_t lobby_state;
 
-	snet_event_t current_event;
-	snet_task_t background_task;
 	barena_pool_t arena_pool;
+	snet_task_t auth_task;
+	snet_task_t create_game_task;
+	snet_task_t join_game_task;
+	snet_task_t list_game_task;
+
+	CF_Client* client;
 
 	char cookie_buf[SNET_MAX_COOKIE_SIZE];
 };
@@ -122,8 +129,8 @@ snet_task_process(snet_task_t* task) {
 	}
 }
 
-static bool
-snet_task_reap(snet_task_t* task, snet_event_t* result) {
+static const snet_event_t*
+snet_task_reap(snet_task_t* task) {
 	if (
 		task->coro.id != 0
 		&&
@@ -131,11 +138,11 @@ snet_task_reap(snet_task_t* task, snet_event_t* result) {
 		&&
 		task->result != NULL
 	) {
-		*result = *task->result;
+		const snet_event_t* result = task->result;
 		task->result = NULL;
-		return true;
+		return result;
 	} else {
-		return false;
+		return NULL;
 	}
 }
 
@@ -218,27 +225,50 @@ snet_init(const snet_config_t* config_in) {
 	barena_pool_init(&snet->arena_pool, 1);
 	(void)barena_snapshot;
 
-	snet_task_init(snet, &snet->background_task);
+	snet_task_init(snet, &snet->auth_task);
+	snet_task_init(snet, &snet->create_game_task);
+	snet_task_init(snet, &snet->join_game_task);
+	snet_task_init(snet, &snet->list_game_task);
 
 	return snet;
 }
 
 void
 snet_cleanup(snet_t* snet) {
-	snet_task_cleanup(&snet->background_task);
+	snet_task_cleanup(&snet->auth_task);
+	snet_task_cleanup(&snet->create_game_task);
+	snet_task_cleanup(&snet->join_game_task);
+	snet_task_cleanup(&snet->list_game_task);
 	barena_pool_cleanup(&snet->arena_pool);
+	if (snet->client) { cf_destroy_client(snet->client); }
 	cf_free(snet);
 }
 
 void
 snet_update(snet_t* snet) {
-	snet_task_process(&snet->background_task);
+	snet_task_process(&snet->auth_task);
+	snet_task_process(&snet->create_game_task);
+	snet_task_process(&snet->join_game_task);
+	snet_task_process(&snet->list_game_task);
 }
 
 const snet_event_t*
 snet_next_event(snet_t* snet) {
-	if (snet_task_reap(&snet->background_task, &snet->current_event)) {
-		return &snet->current_event;
+	const snet_event_t* event;
+	if ((event = snet_task_reap(&snet->auth_task)) != NULL) {
+		return event;
+	}
+
+	if ((event = snet_task_reap(&snet->create_game_task)) != NULL) {
+		return event;
+	}
+
+	if ((event = snet_task_reap(&snet->join_game_task)) != NULL) {
+		return event;
+	}
+
+	if ((event = snet_task_reap(&snet->list_game_task)) != NULL) {
+		return event;
 	}
 
 	return NULL;
@@ -272,7 +302,7 @@ snet_task_login_with_cookie(const snet_task_env_t* env) {
 
 	snet_fetch_status_t fetch_status;
 	while (true) {
-		if (snet_task_cancelled(env)) { goto end; }
+		if (snet_task_cancelled(env)) { break; }
 
 		if ((fetch_status = snet_fetch_process(fetch)) != SNET_FETCH_PENDING) {
 			break;
@@ -313,14 +343,13 @@ snet_task_login_with_cookie(const snet_task_env_t* env) {
 		},
 	});
 
-end:
 	snet_fetch_end(fetch);
 }
 
 void
 snet_login_with_cookie(snet_t* snet, snet_blob_t cookie) {
 	snet_task_begin(
-		snet, &snet->background_task,
+		snet, &snet->auth_task,
 		snet_task_login_with_cookie, &cookie, sizeof(cookie)
 	);
 }
@@ -430,7 +459,7 @@ snet_oauth(const snet_task_env_t* env) {
 void
 snet_login_with_itchio(snet_t* snet) {
 	static const char* url_template = SNET_URL_FMT_PREFIX "/auth/itchio/start?app_port=%d";
-	snet_task_begin(snet, &snet->background_task, snet_oauth, &url_template, sizeof(url_template));
+	snet_task_begin(snet, &snet->auth_task, snet_oauth, &url_template, sizeof(url_template));
 }
 
 /// }}}
@@ -472,6 +501,8 @@ snet_task_create_game(const snet_task_env_t* env) {
 
 	snet_t* snet = env->snet;
 	snet->lobby_state = SNET_CREATING_GAME;
+	snet_log(snet, "Creating game");
+
 	snet_fetch_t* fetch = snet_fetch_begin(&(snet_fetch_options_t){
 		.method = SNET_FETCH_POST,
 		.host = snet->config.host,
@@ -489,7 +520,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 
 	snet_fetch_status_t fetch_status;
 	while (true) {
-		if (snet_task_cancelled(env)) { goto end; }
+		if (snet_task_cancelled(env)) { break; }
 
 		if ((fetch_status = snet_fetch_process(fetch)) != SNET_FETCH_PENDING) {
 			break;
@@ -507,7 +538,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 			CF_JDoc resp = cf_make_json(resp_body, body_size);
 			CF_JVal root = cf_json_get_root(resp);
 
-			snet->lobby_state = SNET_JOINED_GAME;
+			snet->lobby_state = SNET_IN_LOBBY;
 			snet_task_post(env, &(snet_event_t){
 				.type = SNET_EVENT_CREATE_GAME_FINISHED,
 				.create_game = {
@@ -542,14 +573,132 @@ snet_task_create_game(const snet_task_env_t* env) {
 		});
 	}
 
-end:
 	snet_fetch_end(fetch);
 	sfree(req_body);
 }
 
 void
 snet_create_game(snet_t* snet, const snet_game_options_t* options) {
-	snet_task_begin(snet, &snet->background_task, snet_task_create_game, options, sizeof(*options));
+	snet_task_begin(snet, &snet->create_game_task, snet_task_create_game, options, sizeof(*options));
+}
+
+static void
+snet_task_join_game(const snet_task_env_t* env) {
+	SNET_TASK_ARG(snet_blob_t, join_token);
+
+	snet_t* snet = env->snet;
+	snet->lobby_state = SNET_JOINING_GAME;
+	snet_log(snet, "Joining game");
+
+	snet_fetch_t* fetch = snet_fetch_begin(&(snet_fetch_options_t){
+		.method = SNET_FETCH_POST,
+		.host = snet->config.host,
+		.port = snet->config.port,
+		.path = snet_printf(env, "%s%s", snet->config.path, "/game/join"),
+		.verify_tls = !snet->config.insecure_tls,
+
+		.headers = (snet_fetch_header_t[]){
+			snet_auth_header(env, snet),
+			{ 0 }
+		},
+
+		.content = join_token.ptr, .content_length = join_token.size,
+	});
+
+	const void* connect_token = NULL;
+
+	snet_fetch_status_t fetch_status;
+	while (true) {
+		if (snet_task_cancelled(env)) { break; }
+
+		if ((fetch_status = snet_fetch_process(fetch)) != SNET_FETCH_PENDING) {
+			break;
+		}
+		snet_task_yield(env);
+	}
+
+	snet_log(snet, "fetch status: %d", fetch_status);
+	if (fetch_status == SNET_FETCH_FINISHED) {
+		int status_code = snet_fetch_status_code(fetch);
+		snet_log(snet, "status code: %d", status_code);
+		size_t body_size;
+		const void* resp_body = snet_fetch_response_body(fetch, &body_size);
+
+		if (status_code == 200 && body_size >= CF_CONNECT_TOKEN_SIZE) {
+			connect_token = resp_body;
+		} else {
+			void* body_copy = snet_task_alloc(env, body_size);
+			memcpy(body_copy, resp_body, body_size);
+
+			snet->lobby_state = SNET_IN_LOBBY;
+			snet_task_post(env, &(snet_event_t){
+				.type = SNET_EVENT_JOIN_GAME_FINISHED,
+				.join_game = {
+					.status = SNET_ERR_REJECTED,
+					.error = { .ptr = body_copy, .size = body_size },
+				},
+			});
+		}
+	} else {
+		snet->lobby_state = SNET_IN_LOBBY;
+		snet_task_post(env, &(snet_event_t){
+			.type = SNET_EVENT_JOIN_GAME_FINISHED,
+			.join_game = { .status = SNET_ERR_IO },
+		});
+	}
+
+	snet_fetch_end(fetch);
+
+	if (connect_token != NULL) {
+		CF_Client* client = cf_make_client(0, 0, false);
+		if (cf_is_error(cf_client_connect(client, connect_token))) {
+			cf_destroy_client(client);
+			snet->lobby_state = SNET_IN_LOBBY;
+			snet_task_post(env, &(snet_event_t){
+				.type = SNET_EVENT_JOIN_GAME_FINISHED,
+				.join_game = { .status = SNET_ERR_IO },
+			});
+		} else {
+			double last_time = CF_SECONDS;
+			while (true) {
+				if (snet_task_cancelled(env)) {
+					cf_destroy_client(client);
+					break;
+				}
+
+				cf_client_update(client, CF_SECONDS - last_time, time(NULL));
+				last_time = CF_SECONDS;
+
+				CF_ClientState state = cf_client_state_get(client);
+				if (state == CF_CLIENT_STATE_CONNECTED) {
+					snet->client = client;
+
+					snet->lobby_state = SNET_JOINED_GAME;
+					snet_task_post(env, &(snet_event_t){
+						.type = SNET_EVENT_JOIN_GAME_FINISHED,
+						.join_game = { .status = SNET_OK },
+					});
+					break;
+				} else if (state < 0) {
+					cf_destroy_client(client);
+
+					snet->lobby_state = SNET_IN_LOBBY;
+					snet_task_post(env, &(snet_event_t){
+						.type = SNET_EVENT_JOIN_GAME_FINISHED,
+						.join_game = { .status = SNET_ERR_IO },
+					});
+					break;
+				}
+
+				snet_task_yield(env);
+			}
+		}
+	}
+}
+
+void
+snet_join_game(snet_t* snet, snet_blob_t join_token) {
+	snet_task_begin(snet, &snet->join_game_task, snet_task_join_game, &join_token, sizeof(join_token));
 }
 
 #define WBY_IMPLEMENTATION

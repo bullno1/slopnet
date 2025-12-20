@@ -170,7 +170,7 @@ void
 snet_list_games(snet_t* snet);
 
 void
-snet_join_game(snet_t* snet, int id);
+snet_join_game(snet_t* snet, snet_blob_t join_token);
 
 void
 snet_exit_game(snet_t* snet);

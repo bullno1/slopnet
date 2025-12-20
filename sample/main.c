@@ -59,10 +59,21 @@ main(int argc, const char* argv[]) {
 						fprintf(stderr, "Created game\n");
 						fprintf(stderr, "Token: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->create_game.info.join_token));
 						fprintf(stderr, "Data: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->create_game.info.data));
+
+						snet_join_game(snet, snet_event->create_game.info.join_token);
 					} else if (snet_event->create_game.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
 					} else if (snet_event->create_game.status == SNET_ERR_REJECTED) {
 						fprintf(stderr, "Creating game failed with reason: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->create_game.error));
+					}
+					break;
+				case SNET_EVENT_JOIN_GAME_FINISHED:
+					if (snet_event->join_game.status == SNET_OK) {
+						fprintf(stderr, "Joined game");
+					} else if (snet_event->join_game.status == SNET_ERR_IO) {
+						fprintf(stderr, "Network error\n");
+					} else if (snet_event->join_game.status == SNET_ERR_REJECTED) {
+						fprintf(stderr, "Join failed with reason: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->join_game.error));
 					}
 					break;
 				default:

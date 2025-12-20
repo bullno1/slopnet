@@ -467,7 +467,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 	if (options.data.ptr) {
 		cf_json_object_add_string_range(doc, req, "data", options.data.ptr, (char*)options.data.ptr + options.data.size);
 	}
-	dyna char* body = cf_json_to_string(doc);
+	dyna char* req_body = cf_json_to_string_minimal(doc);
 	cf_destroy_json(doc);
 
 	snet_t* snet = env->snet;
@@ -484,7 +484,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 			{ 0 }
 		},
 
-		.content = body, .content_length = slen(body),
+		.content = req_body, .content_length = slen(req_body),
 	});
 
 	snet_fetch_status_t fetch_status;
@@ -523,7 +523,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 			cf_destroy_json(resp);
 		} else {
 			void* body_copy = snet_task_alloc(env, body_size);
-			memcpy(body_copy, body, body_size);
+			memcpy(body_copy, resp_body, body_size);
 
 			snet->lobby_state = SNET_IN_LOBBY;
 			snet_task_post(env, &(snet_event_t){
@@ -544,7 +544,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 
 end:
 	snet_fetch_end(fetch);
-	sfree(body);
+	sfree(req_body);
 }
 
 void

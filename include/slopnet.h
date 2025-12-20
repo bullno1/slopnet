@@ -5,6 +5,9 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+#define SNET_BLOB_FMT "%.*s"
+#define SNET_BLOB_FMT_ARGS(BLOB) (int)(BLOB).size, (char*)(BLOB).ptr
+
 typedef struct snet_s snet_t;
 
 typedef struct {

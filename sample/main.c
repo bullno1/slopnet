@@ -46,23 +46,23 @@ main(int argc, const char* argv[]) {
 			switch (snet_event->type) {
 				case SNET_EVENT_LOGIN_FINISHED:
 					if (snet_event->login.status == SNET_OK) {
-						fprintf(stderr, "Logged in with token: %s\n", (char*)snet_event->login.data.ptr);
+						fprintf(stderr, "Logged in with token: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->login.data));
 						cf_fs_write_string_range_to_file("/cookie", (char*)snet_event->login.data.ptr, (char*)snet_event->login.data.ptr + snet_event->login.data.size);
 					} else if (snet_event->login.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
 					} else if (snet_event->login.status == SNET_ERR_REJECTED) {
-						fprintf(stderr, "Login failed with reason: %s\n", (char*)snet_event->login.data.ptr);
+						fprintf(stderr, "Logged failed with reason: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->login.data));
 					}
 					break;
 				case SNET_EVENT_CREATE_GAME_FINISHED:
 					if (snet_event->create_game.status == SNET_OK) {
 						fprintf(stderr, "Created game\n");
-						fprintf(stderr, "Token: %s\n", (char*)snet_event->create_game.info.join_token.ptr);
-						fprintf(stderr, "Data: %s\n", (char*)snet_event->create_game.info.data.ptr);
+						fprintf(stderr, "Token: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->create_game.info.join_token));
+						fprintf(stderr, "Data: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->create_game.info.data));
 					} else if (snet_event->create_game.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
 					} else if (snet_event->create_game.status == SNET_ERR_REJECTED) {
-						fprintf(stderr, "Creating game failed with reason: %s\n", (char*)snet_event->create_game.error.ptr);
+						fprintf(stderr, "Creating game failed with reason: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->create_game.error));
 					}
 					break;
 				default:

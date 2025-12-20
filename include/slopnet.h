@@ -62,6 +62,7 @@ typedef enum {
 
 typedef struct {
 	snet_blob_t join_token;
+	snet_blob_t creator;
 	snet_blob_t data;
 } snet_game_info_t;
 

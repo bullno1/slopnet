@@ -54,6 +54,17 @@ main(int argc, const char* argv[]) {
 						fprintf(stderr, "Login failed with reason: %s\n", (char*)snet_event->login.data.ptr);
 					}
 					break;
+				case SNET_EVENT_CREATE_GAME_FINISHED:
+					if (snet_event->create_game.status == SNET_OK) {
+						fprintf(stderr, "Created game\n");
+						fprintf(stderr, "Token: %s\n", (char*)snet_event->create_game.info.join_token.ptr);
+						fprintf(stderr, "Data: %s\n", (char*)snet_event->create_game.info.data.ptr);
+					} else if (snet_event->create_game.status == SNET_ERR_IO) {
+						fprintf(stderr, "Network error\n");
+					} else if (snet_event->create_game.status == SNET_ERR_REJECTED) {
+						fprintf(stderr, "Creating game failed with reason: %s\n", (char*)snet_event->create_game.error.ptr);
+					}
+					break;
 				default:
 					break;
 			}

@@ -514,6 +514,7 @@ snet_task_create_game(const snet_task_env_t* env) {
 					.status = SNET_OK,
 					.info = {
 						.join_token = snet_strcpy(env, cf_json_get_string(cf_json_get(root, "join_token"))),
+						.creator = snet_strcpy(env, cf_json_get_string(cf_json_get(root, "creator"))),
 						.data = snet_strcpy(env, cf_json_get_string(cf_json_get(root, "data"))),
 					}
 				},

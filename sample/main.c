@@ -37,6 +37,9 @@ main(int argc, const char* argv[]) {
 		snet_login_with_cookie(snet, (snet_blob_t){ .ptr = cookie, .size = cookie_size });
 	}
 
+	int num_games = 0;
+	const snet_game_info_t* games = NULL;
+
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
 
@@ -79,6 +82,12 @@ main(int argc, const char* argv[]) {
 				case SNET_EVENT_DISCONNECTED:
 					fprintf(stderr, "Disconnected\n");
 					break;
+				case SNET_EVENT_LIST_GAMES_FINISHED:
+					if (snet_event->list_games.status == SNET_OK) {
+						num_games = snet_event->list_games.num_games;
+						games = snet_event->list_games.games;
+					}
+					break;
 				case SNET_EVENT_MESSAGE:
 					fprintf(stderr, "Received: %.*s\n", (int)snet_event->message.data.size, (const char*)snet_event->message.data.ptr);
 					break;
@@ -110,6 +119,21 @@ main(int argc, const char* argv[]) {
 									.max_num_players = 4,
 								});
 							}
+
+							if (ImGui_Button("Find game")) {
+								num_games = 0;
+								snet_list_games(snet);
+							}
+
+							if (num_games > 0) {
+								ImGui_Separator();
+
+								for (int i = 0; i < num_games; ++i) {
+									if (ImGui_Button(games[i].creator.ptr)) {
+										snet_join_game(snet, games[i].join_token);
+									}
+								}
+							}
 						} break;
 						case SNET_LISTING_GAMES: {
 							ImGui_LabelText("Status", "Finding games");
@@ -122,7 +146,6 @@ main(int argc, const char* argv[]) {
 						} break;
 						case SNET_JOINED_GAME: {
 							ImGui_LabelText("Status", "In game");
-
 							if (ImGui_Button("Send message")) {
 								snet_blob_t msg = {
 									.ptr = "Hello",

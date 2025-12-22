@@ -58,7 +58,7 @@ struct snet_s {
 	snet_task_t auth_task;
 	snet_task_t create_game_task;
 	snet_task_t join_game_task;
-	snet_task_t list_game_task;
+	snet_task_t list_games_task;
 
 	CF_Client* client;
 	double last_update;
@@ -231,7 +231,7 @@ snet_init(const snet_config_t* config_in) {
 	snet_task_init(snet, &snet->auth_task);
 	snet_task_init(snet, &snet->create_game_task);
 	snet_task_init(snet, &snet->join_game_task);
-	snet_task_init(snet, &snet->list_game_task);
+	snet_task_init(snet, &snet->list_games_task);
 
 	return snet;
 }
@@ -241,7 +241,7 @@ snet_cleanup(snet_t* snet) {
 	snet_task_cleanup(&snet->auth_task);
 	snet_task_cleanup(&snet->create_game_task);
 	snet_task_cleanup(&snet->join_game_task);
-	snet_task_cleanup(&snet->list_game_task);
+	snet_task_cleanup(&snet->list_games_task);
 	barena_pool_cleanup(&snet->arena_pool);
 	if (snet->client) { cf_destroy_client(snet->client); }
 	cf_free(snet);
@@ -252,7 +252,7 @@ snet_update(snet_t* snet) {
 	snet_task_process(&snet->auth_task);
 	snet_task_process(&snet->create_game_task);
 	snet_task_process(&snet->join_game_task);
-	snet_task_process(&snet->list_game_task);
+	snet_task_process(&snet->list_games_task);
 
 	if (snet->client) {
 		cf_client_update(snet->client, CF_SECONDS - snet->last_update, time(NULL));;
@@ -275,7 +275,7 @@ snet_next_event(snet_t* snet) {
 		return event;
 	}
 
-	if ((event = snet_task_reap(&snet->list_game_task)) != NULL) {
+	if ((event = snet_task_reap(&snet->list_games_task)) != NULL) {
 		return event;
 	}
 
@@ -744,6 +744,98 @@ snet_send(snet_t* snet, snet_blob_t message, bool reliable) {
 	if (snet->client) {
 		cf_client_send(snet->client, message.ptr, message.size, reliable);
 	}
+}
+
+void
+snet_exit_game(snet_t* snet) {
+	if (snet->client) {
+		cf_client_disconnect(snet->client);
+	}
+}
+
+static void
+snet_task_list_games(const snet_task_env_t* env) {
+	snet_t* snet = env->snet;
+	snet_log(snet, "Listing game");
+
+	snet_fetch_t* fetch = snet_fetch_begin(&(snet_fetch_options_t){
+		.method = SNET_FETCH_GET,
+		.host = snet->config.host,
+		.port = snet->config.port,
+		.path = snet_printf(env, "%s%s", snet->config.path, "/game/list"),
+		.verify_tls = !snet->config.insecure_tls,
+
+		.headers = (snet_fetch_header_t[]){
+			snet_auth_header(env, snet),
+			{ 0 }
+		},
+	});
+
+	snet_fetch_status_t fetch_status;
+	while (true) {
+		if (snet_task_cancelled(env)) { break; }
+
+		if ((fetch_status = snet_fetch_process(fetch)) != SNET_FETCH_PENDING) {
+			break;
+		}
+		snet_task_yield(env);
+	}
+
+	snet_log(snet, "fetch status: %d", fetch_status);
+	if (fetch_status == SNET_FETCH_FINISHED) {
+		int status_code = snet_fetch_status_code(fetch);
+		snet_log(snet, "status code: %d", status_code);
+		size_t body_size;
+		const void* resp_body = snet_fetch_response_body(fetch, &body_size);
+
+		if (status_code == 200) {
+			CF_JDoc doc = cf_make_json(resp_body, body_size);
+			CF_JVal resp = cf_json_get_root(doc);
+			CF_JVal games = cf_json_get(resp, "games");
+			int num_entries = cf_json_get_len(games);
+			snet_game_info_t* entries = snet_task_alloc(env, sizeof(snet_game_info_t) * num_entries);
+			for (int i = 0; i < num_entries; ++i) {
+				CF_JVal entry = cf_json_array_get(games, i);
+				entries[i] = (snet_game_info_t){
+					.creator = snet_strcpy(env, cf_json_get_string(cf_json_get(entry, "creator"))),
+					.join_token = snet_strcpy(env, cf_json_get_string(cf_json_get(entry, "join_token"))),
+					.data = snet_strcpy(env, cf_json_get_string(cf_json_get(entry, "data"))),
+				};
+			}
+			cf_destroy_json(doc);
+
+			snet_task_post(env, &(snet_event_t){
+				.type = SNET_EVENT_LIST_GAMES_FINISHED,
+				.list_games = {
+					.status = SNET_OK,
+					.num_games = num_entries,
+					.games = entries,
+				},
+			});
+		} else {
+			void* body_copy = snet_task_alloc(env, body_size);
+			memcpy(body_copy, resp_body, body_size);
+
+			snet_task_post(env, &(snet_event_t){
+				.type = SNET_EVENT_LIST_GAMES_FINISHED,
+				.list_games = {
+					.status = SNET_ERR_REJECTED,
+				},
+			});
+		}
+	} else {
+		snet_task_post(env, &(snet_event_t){
+			.type = SNET_EVENT_LIST_GAMES_FINISHED,
+			.list_games = { .status = SNET_ERR_IO },
+		});
+	}
+
+	snet_fetch_end(fetch);
+}
+
+void
+snet_list_games(snet_t* snet) {
+	snet_task_begin(snet, &snet->list_games_task, snet_task_list_games, NULL, 0);
 }
 
 #define WBY_IMPLEMENTATION

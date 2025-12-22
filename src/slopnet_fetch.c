@@ -73,4 +73,5 @@ snet_fetch_end(snet_fetch_t* fetch) {
 	cf_https_destroy(request);
 }
 
+#else
 #endif

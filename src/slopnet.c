@@ -9,12 +9,15 @@
 #include <cute_coroutine.h>
 #include <cute_alloc.h>
 #include <cute_array.h>
-#include <cute_networking.h>
 #include <cute_time.h>
 #include <SDL3/SDL_misc.h>
+
+#include "slopnet_fetch.h"
+#include "slopnet_transport.h"
+
 #define BARENA_API static
 #include "barena.h"
-#include "slopnet_fetch.h"
+
 #define WBY_STATIC
 #include "wby.h"
 
@@ -60,9 +63,7 @@ struct snet_s {
 	snet_task_t join_game_task;
 	snet_task_t list_games_task;
 
-	CF_Client* client;
-	double last_update;
-	void* last_packet;
+	snet_transport_t* transport;
 	snet_event_t current_event;
 
 	char cookie_buf[SNET_MAX_COOKIE_SIZE];
@@ -243,7 +244,8 @@ snet_cleanup(snet_t* snet) {
 	snet_task_cleanup(&snet->join_game_task);
 	snet_task_cleanup(&snet->list_games_task);
 	barena_pool_cleanup(&snet->arena_pool);
-	if (snet->client) { cf_destroy_client(snet->client); }
+
+	if (snet->transport) { snet_transport_cleanup(snet->transport); }
 	cf_free(snet);
 }
 
@@ -254,9 +256,8 @@ snet_update(snet_t* snet) {
 	snet_task_process(&snet->join_game_task);
 	snet_task_process(&snet->list_games_task);
 
-	if (snet->client) {
-		cf_client_update(snet->client, CF_SECONDS - snet->last_update, time(NULL));;
-		snet->last_update = CF_SECONDS;
+	if (snet->transport) {
+		snet_transport_update(snet->transport);
 	}
 }
 
@@ -279,28 +280,23 @@ snet_next_event(snet_t* snet) {
 		return event;
 	}
 
-	if (snet->client != NULL) {
-		if (snet->last_packet != NULL) {
-			cf_client_free_packet(snet->client, snet->last_packet);
-			snet->last_packet = NULL;
-		}
-
-		int packet_size;
-		bool reliable;
-		if (cf_client_pop_packet(snet->client, &snet->last_packet, &packet_size, &reliable)) {
+	if (snet->transport != NULL) {
+		size_t packet_size;
+		const void* packet;
+		if (snet_transport_recv(snet->transport, &packet, &packet_size)) {
 			snet->current_event = (snet_event_t){
 				.type = SNET_EVENT_MESSAGE,
 				.message.data = {
-					.ptr = snet->last_packet,
+					.ptr = packet,
 					.size = packet_size,
 				},
 			};
 			return &snet->current_event;
 		}
 
-		if (cf_client_state_get(snet->client) != CF_CLIENT_STATE_CONNECTED) {
-			cf_destroy_client(snet->client);
-			snet->client = NULL;
+		if (snet_transport_state(snet->transport) == SNET_TRANSPORT_DISCONNECTED) {
+			snet_transport_cleanup(snet->transport);
+			snet->transport = NULL;
 			snet->current_event.type = SNET_EVENT_DISCONNECTED;
 			snet->lobby_state = SNET_IN_LOBBY;
 			return &snet->current_event;
@@ -626,11 +622,17 @@ snet_task_join_game(const snet_task_env_t* env) {
 	snet->lobby_state = SNET_JOINING_GAME;
 	snet_log(snet, "Joining game");
 
+#ifndef __EMSCRIPTEN__
+	const char* transport = "cute_net";
+#else
+	const char* transport = "webtransport";
+#endif
+
 	snet_fetch_t* fetch = snet_fetch_begin(&(snet_fetch_options_t){
 		.method = SNET_FETCH_POST,
 		.host = snet->config.host,
 		.port = snet->config.port,
-		.path = snet_printf(env, "%s%s", snet->config.path, "/game/join"),
+		.path = snet_printf(env, "%s%s?transport=%s", snet->config.path, "/game/join", transport),
 		.verify_tls = !snet->config.insecure_tls,
 
 		.headers = (snet_fetch_header_t[]){
@@ -641,7 +643,7 @@ snet_task_join_game(const snet_task_env_t* env) {
 		.content = join_token.ptr, .content_length = join_token.size,
 	});
 
-	const void* connect_token = NULL;
+	const void* transport_config = NULL;
 
 	snet_fetch_status_t fetch_status;
 	while (true) {
@@ -660,8 +662,8 @@ snet_task_join_game(const snet_task_env_t* env) {
 		size_t body_size;
 		const void* resp_body = snet_fetch_response_body(fetch, &body_size);
 
-		if (status_code == 200 && body_size >= CF_CONNECT_TOKEN_SIZE) {
-			connect_token = resp_body;
+		if (status_code == 200) {
+			transport_config = resp_body;
 		} else {
 			void* body_copy = snet_task_alloc(env, body_size);
 			memcpy(body_copy, resp_body, body_size);
@@ -683,55 +685,42 @@ snet_task_join_game(const snet_task_env_t* env) {
 		});
 	}
 
-	snet_fetch_end(fetch);
-
-	if (connect_token != NULL) {
-		CF_Client* client = cf_make_client(0, 0, false);
-		if (cf_is_error(cf_client_connect(client, connect_token))) {
-			cf_destroy_client(client);
-			snet->lobby_state = SNET_IN_LOBBY;
-			snet_task_post(env, &(snet_event_t){
-				.type = SNET_EVENT_JOIN_GAME_FINISHED,
-				.join_game = { .status = SNET_ERR_IO },
-			});
-		} else {
-			double last_time = CF_SECONDS;
-			while (true) {
-				if (snet_task_cancelled(env)) {
-					cf_destroy_client(client);
-					break;
-				}
-
-				cf_client_update(client, CF_SECONDS - last_time, time(NULL));
-				last_time = CF_SECONDS;
-
-				CF_ClientState state = cf_client_state_get(client);
-				if (state == CF_CLIENT_STATE_CONNECTED) {
-					snet->client = client;
-					snet->last_update = CF_SECONDS;
-
-					snet->lobby_state = SNET_JOINED_GAME;
-					snet_task_post(env, &(snet_event_t){
-						.type = SNET_EVENT_JOIN_GAME_FINISHED,
-						.join_game = { .status = SNET_OK },
-					});
-					break;
-				} else if (state < 0) {
-					snet_log(snet, "Error: %s", cf_client_state_to_string(state));
-					cf_destroy_client(client);
-
-					snet->lobby_state = SNET_IN_LOBBY;
-					snet_task_post(env, &(snet_event_t){
-						.type = SNET_EVENT_JOIN_GAME_FINISHED,
-						.join_game = { .status = SNET_ERR_IO },
-					});
-					break;
-				}
-
-				snet_task_yield(env);
+	if (transport_config != NULL) {
+		snet_transport_t* transport = snet_transport_init(transport_config);
+		while (true) {
+			if (snet_task_cancelled(env)) {
+				snet_transport_cleanup(transport);
+				break;
 			}
+
+			snet_transport_update(transport);
+
+			snet_transport_state_t state = snet_transport_state(transport);
+			if (state == SNET_TRANSPORT_CONNECTED) {
+				snet->transport = transport;
+
+				snet->lobby_state = SNET_JOINED_GAME;
+				snet_task_post(env, &(snet_event_t){
+					.type = SNET_EVENT_JOIN_GAME_FINISHED,
+					.join_game = { .status = SNET_OK },
+				});
+				break;
+			} else if (state == SNET_TRANSPORT_DISCONNECTED) {
+				snet_transport_cleanup(transport);
+
+				snet->lobby_state = SNET_IN_LOBBY;
+				snet_task_post(env, &(snet_event_t){
+					.type = SNET_EVENT_JOIN_GAME_FINISHED,
+					.join_game = { .status = SNET_ERR_IO },
+				});
+				break;
+			}
+
+			snet_task_yield(env);
 		}
 	}
+
+	snet_fetch_end(fetch);
 }
 
 void
@@ -741,15 +730,16 @@ snet_join_game(snet_t* snet, snet_blob_t join_token) {
 
 void
 snet_send(snet_t* snet, snet_blob_t message, bool reliable) {
-	if (snet->client) {
-		cf_client_send(snet->client, message.ptr, message.size, reliable);
+	if (snet->transport) {
+		snet_transport_send(snet->transport, message.ptr, message.size, reliable);
 	}
 }
 
 void
 snet_exit_game(snet_t* snet) {
-	if (snet->client) {
-		cf_client_disconnect(snet->client);
+	if (snet->transport) {
+		snet_transport_cleanup(snet->transport);
+		snet->transport = NULL;
 	}
 }
 

@@ -31,9 +31,6 @@ typedef enum {
 	SNET_EVENT_CREATE_GAME_FINISHED,
 	SNET_EVENT_LIST_GAMES_FINISHED,
 	SNET_EVENT_JOIN_GAME_FINISHED,
-	SNET_EVENT_EXIT_GAME_FINISHED,
-	SNET_EVENT_PLAYER_JOINED,
-	SNET_EVENT_PLAYER_LEFT,
 	SNET_EVENT_MESSAGE,
 	SNET_EVENT_DISCONNECTED,
 } snet_event_type_t;
@@ -103,16 +100,6 @@ typedef struct {
 } snet_message_t;
 
 typedef enum {
-	SNET_DISCONNECT_EXIT,
-	SNET_DISCONNECT_KICKED,
-	SNET_DISCONNECT_ERR,
-} snet_disconnect_reason_t;
-
-typedef struct {
-	snet_disconnect_reason_t reason;
-} snet_disconnected_t;
-
-typedef enum {
 	SNET_GAME_PUBLIC,
 	SNET_GAME_PRIVATE,
 } snet_game_visibility_t;
@@ -132,7 +119,6 @@ typedef struct {
 		snet_list_games_result_t list_games;
 		snet_join_game_result_t join_game;
 		snet_message_t message;
-		snet_disconnected_t disconnected;
 	};
 } snet_event_t;
 

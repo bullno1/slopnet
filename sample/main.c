@@ -69,12 +69,18 @@ main(int argc, const char* argv[]) {
 					break;
 				case SNET_EVENT_JOIN_GAME_FINISHED:
 					if (snet_event->join_game.status == SNET_OK) {
-						fprintf(stderr, "Joined game");
+						fprintf(stderr, "Joined game\n");
 					} else if (snet_event->join_game.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
 					} else if (snet_event->join_game.status == SNET_ERR_REJECTED) {
 						fprintf(stderr, "Join failed with reason: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->join_game.error));
 					}
+					break;
+				case SNET_EVENT_DISCONNECTED:
+					fprintf(stderr, "Disconnected\n");
+					break;
+				case SNET_EVENT_MESSAGE:
+					fprintf(stderr, "Received: %.*s\n", (int)snet_event->message.data.size, (const char*)snet_event->message.data.ptr);
 					break;
 				default:
 					break;
@@ -116,6 +122,14 @@ main(int argc, const char* argv[]) {
 						} break;
 						case SNET_JOINED_GAME: {
 							ImGui_LabelText("Status", "In game");
+
+							if (ImGui_Button("Send message")) {
+								snet_blob_t msg = {
+									.ptr = "Hello",
+									.size = sizeof("Hello") - 1,
+								};
+								snet_send(snet, msg, false);
+							}
 						} break;
 					}
 				} break;

@@ -61,6 +61,9 @@ struct snet_s {
 	snet_task_t list_game_task;
 
 	CF_Client* client;
+	double last_update;
+	void* last_packet;
+	snet_event_t current_event;
 
 	char cookie_buf[SNET_MAX_COOKIE_SIZE];
 };
@@ -250,6 +253,11 @@ snet_update(snet_t* snet) {
 	snet_task_process(&snet->create_game_task);
 	snet_task_process(&snet->join_game_task);
 	snet_task_process(&snet->list_game_task);
+
+	if (snet->client) {
+		cf_client_update(snet->client, CF_SECONDS - snet->last_update, time(NULL));;
+		snet->last_update = CF_SECONDS;
+	}
 }
 
 const snet_event_t*
@@ -269,6 +277,34 @@ snet_next_event(snet_t* snet) {
 
 	if ((event = snet_task_reap(&snet->list_game_task)) != NULL) {
 		return event;
+	}
+
+	if (snet->client != NULL) {
+		if (snet->last_packet != NULL) {
+			cf_client_free_packet(snet->client, snet->last_packet);
+			snet->last_packet = NULL;
+		}
+
+		int packet_size;
+		bool reliable;
+		if (cf_client_pop_packet(snet->client, &snet->last_packet, &packet_size, &reliable)) {
+			snet->current_event = (snet_event_t){
+				.type = SNET_EVENT_MESSAGE,
+				.message.data = {
+					.ptr = snet->last_packet,
+					.size = packet_size,
+				},
+			};
+			return &snet->current_event;
+		}
+
+		if (cf_client_state_get(snet->client) != CF_CLIENT_STATE_CONNECTED) {
+			cf_destroy_client(snet->client);
+			snet->client = NULL;
+			snet->current_event.type = SNET_EVENT_DISCONNECTED;
+			snet->lobby_state = SNET_IN_LOBBY;
+			return &snet->current_event;
+		}
 	}
 
 	return NULL;
@@ -672,6 +708,7 @@ snet_task_join_game(const snet_task_env_t* env) {
 				CF_ClientState state = cf_client_state_get(client);
 				if (state == CF_CLIENT_STATE_CONNECTED) {
 					snet->client = client;
+					snet->last_update = CF_SECONDS;
 
 					snet->lobby_state = SNET_JOINED_GAME;
 					snet_task_post(env, &(snet_event_t){
@@ -680,6 +717,7 @@ snet_task_join_game(const snet_task_env_t* env) {
 					});
 					break;
 				} else if (state < 0) {
+					snet_log(snet, "Error: %s", cf_client_state_to_string(state));
 					cf_destroy_client(client);
 
 					snet->lobby_state = SNET_IN_LOBBY;
@@ -699,6 +737,13 @@ snet_task_join_game(const snet_task_env_t* env) {
 void
 snet_join_game(snet_t* snet, snet_blob_t join_token) {
 	snet_task_begin(snet, &snet->join_game_task, snet_task_join_game, &join_token, sizeof(join_token));
+}
+
+void
+snet_send(snet_t* snet, snet_blob_t message, bool reliable) {
+	if (snet->client) {
+		cf_client_send(snet->client, message.ptr, message.size, reliable);
+	}
 }
 
 #define WBY_IMPLEMENTATION

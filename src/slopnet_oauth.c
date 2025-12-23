@@ -1,5 +1,10 @@
 #include "slopnet_oauth.h"
 
+static void*
+snet_oauth_alloc(size_t size, size_t alignment, const snet_oauth_config_t* config) {
+	return config->alloc(size, alignment, config->memctx);
+}
+
 #ifndef __EMSCRIPTEN__
 
 #include <string.h>
@@ -17,11 +22,6 @@ struct snet_oauth_s {
 	char data_buf[1024];
 	size_t data_size;
 };
-
-static void*
-snet_oauth_alloc(size_t size, size_t alignment, const snet_oauth_config_t* config) {
-	return config->alloc(size, alignment, config->memctx);
-}
 
 static const char*
 snet_oauth_vprintf(const snet_oauth_config_t* config, const char* fmt, va_list args) {
@@ -115,7 +115,7 @@ snet_oauth_begin(const snet_oauth_config_t* config) {
 
 	const char* url = snet_oauth_printf(
 		config,
-		"%s?app_port=%d", config->start_url, oauth->httpd.config.port
+		"%s?origin=http://localhost:%d", config->start_url, oauth->httpd.config.port
 	);
 	SDL_OpenURL(url);
 
@@ -147,5 +147,43 @@ snet_oauth_end(snet_oauth_t* oauth) {
 #include "wby.h"
 
 #else
+
+struct snet_oauth_s {
+	snet_oauth_config_t config;
+};
+
+extern void
+snet_oauth_begin_js(const char* url);
+
+extern size_t
+snet_oauth_data_size(void);
+
+extern void
+snet_oauth_copy_data(void* ptr, size_t max_size);
+
+snet_oauth_t*
+snet_oauth_begin(const snet_oauth_config_t* config) {
+	snet_oauth_t* oauth = snet_oauth_alloc(sizeof(snet_oauth_t), _Alignof(snet_oauth_t), config);
+	*oauth = (snet_oauth_t){
+		.config = *config,
+	};
+
+	snet_oauth_begin_js(config->start_url);
+	return oauth;
+}
+
+const void*
+snet_oauth_data(snet_oauth_t* oauth, size_t* size) {
+	*size =  snet_oauth_data_size();
+	if (*size == 0) { return NULL; }
+
+	void* data = snet_oauth_alloc(*size, _Alignof(char), &oauth->config);
+	snet_oauth_copy_data(data, *size);
+	return data;
+}
+
+void
+snet_oauth_end(snet_oauth_t* oauth) {
+}
 
 #endif

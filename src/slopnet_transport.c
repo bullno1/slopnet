@@ -78,4 +78,31 @@ snet_transport_send(snet_transport_t* transport, const void* message, size_t siz
 
 #else
 
+snet_transport_t*
+snet_transport_init(const char* configuration) {
+	return NULL;
+}
+
+void
+snet_transport_cleanup(snet_transport_t* transport) {
+}
+
+void
+snet_transport_update(snet_transport_t* transport) {
+}
+
+snet_transport_state_t
+snet_transport_state(snet_transport_t* transport) {
+	return 0;
+}
+
+bool
+snet_transport_recv(snet_transport_t* transport, const void** message, size_t* size) {
+	return false;
+}
+
+void
+snet_transport_send(snet_transport_t* transport, const void* message, size_t size, bool reliable) {
+}
+
 #endif

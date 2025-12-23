@@ -74,4 +74,29 @@ snet_fetch_end(snet_fetch_t* fetch) {
 }
 
 #else
+
+snet_fetch_t*
+snet_fetch_begin(const snet_fetch_options_t* options) {
+	return NULL;
+}
+
+snet_fetch_status_t
+snet_fetch_process(snet_fetch_t* fetch) {
+	return 0;
+}
+
+int
+snet_fetch_status_code(snet_fetch_t* fetch) {
+	return 0;
+}
+
+const void*
+snet_fetch_response_body(snet_fetch_t* fetch, size_t* size) {
+	return NULL;
+}
+
+void
+snet_fetch_end(snet_fetch_t* fetch) {
+}
+
 #endif

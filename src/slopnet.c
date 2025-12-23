@@ -1,25 +1,20 @@
-// vim: set foldmethod=marker foldlevel=0:
 #include <slopnet.h>
 #include <string.h>
-#include <assert.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
 #include <cute_json.h>
 #include <cute_coroutine.h>
 #include <cute_alloc.h>
-#include <cute_array.h>
 #include <cute_time.h>
 #include <SDL3/SDL_misc.h>
 
 #include "slopnet_fetch.h"
 #include "slopnet_transport.h"
+#include "slopnet_oauth.h"
 
 #define BARENA_API static
 #include "barena.h"
-
-#define WBY_STATIC
-#include "wby.h"
 
 #define SNET_URL_FMT_PREFIX "https://%s:%d%s"
 #define SNET_URL_FMT_PREFIX_ARGS(snet) (snet)->config.host, (snet)->config.port, (snet)->config.path
@@ -386,115 +381,68 @@ snet_login_with_cookie(snet_t* snet, snet_blob_t cookie) {
 	);
 }
 
-// OAuth {{{
-
-static int
-snet_oauth_httpd(struct wby_con* conn, void* userdata) {
-	snet_task_env_t* env = userdata;
-	snet_t* snet = env->snet;
-
-	if (strcmp(conn->request.uri, "/finish") == 0) {
-		char success[2];
-
-		int size = wby_find_query_var(
-			conn->request.query_params, "data",
-			snet->cookie_buf, SNET_MAX_COOKIE_SIZE
-		);
-		if (size < 0) { return 1; }
-		snet->cookie_buf[size] = '\0';
-
-		if (
-			wby_find_query_var(
-				conn->request.query_params,
-				"success",
-				success, sizeof(success)
-			) < 1
-		) {
-			return 1;
-		}
-
-		struct wby_header headers[] = {
-			{
-				.name = "location",
-				.value = snet_printf(env, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet))
-			}
-		};
-		wby_response_begin(conn, 303, 0, headers, sizeof(headers) / sizeof(headers[0]));
-		wby_response_end(conn);
-
-		bool succeeded = success[0] == '1';
-		snet->auth_state = succeeded ? SNET_AUTHORIZED : SNET_UNAUTHORIZED;
-		snet_task_post(env, &(snet_event_t){
-			.type = SNET_EVENT_LOGIN_FINISHED,
-			.login = {
-				.status = succeeded ? SNET_OK : SNET_ERR_REJECTED,
-				.data = {
-					.ptr = snet->cookie_buf,
-					.size = size,
-				},
-			},
-		});
-		return 0;
-	} else {
-		return 1;
-	}
+static void*
+snet_oauth_alloc(size_t size, size_t alignment, void* memctx) {
+	const snet_task_env_t* env = memctx;
+	return barena_memalign(&env->self->arena, size, alignment);
 }
 
 static void
-snet_oauth(const snet_task_env_t* env) {
-	SNET_TASK_ARG(const char*, url_template);
-
-	struct wby_config httpd_config = {
-		.address = "127.0.0.1",
-		.connection_max = 4,
-		.request_buffer_size = 1024,
-		.io_buffer_size = 1024,
-		.dispatch = snet_oauth_httpd,
-		.userdata = (void*)env,
-	};
-	wby_size httpd_memory_size;
-	struct wby_server httpd;
-	wby_init(&httpd, &httpd_config, &httpd_memory_size);
-
-	(void)wby_find_conn;
-	(void)wby_frame_begin;
-	(void)wby_frame_end;
-	(void)wby_read;
-
-	void* httpd_memory = snet_task_alloc(env, httpd_memory_size);
-	if (wby_start(&httpd, httpd_memory) != WBY_OK) {
-		return;
-	}
-
+snet_task_login_with_itchio(const snet_task_env_t* env) {
+	SNET_TASK_ARG(snet_blob_t, cookie);
 	snet_t* snet = env->snet;
-	snet->auth_state = SNET_AUTHORIZING;
-	const char* url = snet_printf(
-		env,
-		url_template,
-		SNET_URL_FMT_PREFIX_ARGS(env->snet), httpd.config.port
-	);
-	snet_log(snet, "Opening %s", url);
-	SDL_OpenURL(url);
 
-	while (
-		!snet_task_cancelled(env)
-		&&
-		snet->auth_state == SNET_AUTHORIZING
-	) {
-		wby_update(&httpd, 0);
+	snet->auth_state = SNET_AUTHORIZING;
+	snet_oauth_t* oauth = snet_oauth_begin(&(snet_oauth_config_t){
+		.start_url = snet_printf(env, SNET_URL_FMT_PREFIX "/auth/itchio/start", SNET_URL_FMT_PREFIX_ARGS(snet)),
+		.end_url = snet_printf(env, SNET_URL_FMT_PREFIX "/auth/itchio/end", SNET_URL_FMT_PREFIX_ARGS(snet)),
+		.alloc = snet_oauth_alloc,
+		.memctx = (void*)env,
+	});
+
+
+	snet_oauth_state_t oauth_state;
+	while (true) {
+		if (snet_task_cancelled(env)) { break; }
+
+		if ((oauth_state = snet_oauth_update(oauth)) != SNET_OAUTH_PENDING) {
+			break;
+		}
 		snet_task_yield(env);
 	}
 
-	wby_stop(&httpd);
+	if (oauth_state != SNET_OAUTH_PENDING) {  // We could be cancelled
+		size_t data_size;
+		const void* oauth_data = snet_oauth_data(oauth, &data_size);
+		if (oauth_data != NULL && data_size < sizeof(snet->cookie_buf)) {
+			memcpy(snet->cookie_buf, oauth_data, data_size);
+			snet->cookie_buf[data_size] = '\0';
+		}
+		snet_task_post(env, &(snet_event_t){
+			.type = SNET_EVENT_LOGIN_FINISHED,
+			.login = {
+				.status = oauth_state == SNET_OAUTH_SUCCESS ? SNET_OK : SNET_ERR_REJECTED,
+				.data = { .ptr = snet->cookie_buf, .size = data_size },
+			},
+		});
+	} else {
+		snet_task_post(env, &(snet_event_t){
+			.type = SNET_EVENT_LOGIN_FINISHED,
+			.login = {
+				.status = SNET_ERR_IO,
+			},
+		});
+	}
+
+	snet->auth_state = oauth_state == SNET_OAUTH_SUCCESS ? SNET_AUTHORIZED : SNET_UNAUTHORIZED;
+
+	snet_oauth_end(oauth);
 }
 
 void
 snet_login_with_itchio(snet_t* snet) {
-	static const char* url_template = SNET_URL_FMT_PREFIX "/auth/itchio/start?app_port=%d";
-	snet_task_begin(snet, &snet->auth_task, snet_oauth, &url_template, sizeof(url_template));
+	snet_task_begin(snet, &snet->auth_task, snet_task_login_with_itchio, NULL, 0);
 }
-
-/// }}}
 
 static snet_fetch_header_t
 snet_auth_header(const snet_task_env_t* env, snet_t* snet) {
@@ -827,9 +775,6 @@ void
 snet_list_games(snet_t* snet) {
 	snet_task_begin(snet, &snet->list_games_task, snet_task_list_games, NULL, 0);
 }
-
-#define WBY_IMPLEMENTATION
-#include "wby.h"
 
 #define BLIB_IMPLEMENTATION
 #include "barena.h"

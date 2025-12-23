@@ -75,28 +75,65 @@ snet_fetch_end(snet_fetch_t* fetch) {
 
 #else
 
+#include <emscripten/fetch.h>
+#include <string.h>
+#include <cute_array.h>
+
 snet_fetch_t*
 snet_fetch_begin(const snet_fetch_options_t* options) {
-	return NULL;
+	emscripten_fetch_attr_t fetch_attr;
+	emscripten_fetch_attr_init(&fetch_attr);
+
+	strcpy(fetch_attr.requestMethod, options->method == SNET_FETCH_POST ? "POST" : "GET");
+	fetch_attr.requestData = options->content;
+	fetch_attr.requestDataSize = options->content_length;
+	fetch_attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_REPLACE;
+
+	dyna const char** headers = NULL;
+	for (int i = 0; options->headers != NULL && options->headers[i].name != NULL; ++i) {
+		apush(headers, options->headers[i].name);
+		apush(headers, options->headers[i].value);
+	}
+	apush(headers, NULL);
+	fetch_attr.requestHeaders = headers;
+
+	char url[1024];
+	snprintf(url, sizeof(url), "https://%s:%d%s", options->host, options->port, options->path);
+
+	emscripten_fetch_t* fetch = emscripten_fetch(&fetch_attr, url);
+	afree(headers);
+
+	return (snet_fetch_t*)fetch;
 }
 
 snet_fetch_status_t
-snet_fetch_process(snet_fetch_t* fetch) {
-	return 0;
+snet_fetch_process(snet_fetch_t* fetch_in) {
+	emscripten_fetch_t* fetch = (emscripten_fetch_t*)fetch_in;
+	if (fetch->readyState != 4) {
+		return SNET_FETCH_PENDING;
+	} else if (fetch->status == 0) {
+		return SNET_FETCH_ERROR;
+	} else {
+		return SNET_FETCH_FINISHED;
+	}
 }
 
 int
-snet_fetch_status_code(snet_fetch_t* fetch) {
-	return 0;
+snet_fetch_status_code(snet_fetch_t* fetch_in) {
+	emscripten_fetch_t* fetch = (emscripten_fetch_t*)fetch_in;
+	return fetch->status;
 }
 
 const void*
-snet_fetch_response_body(snet_fetch_t* fetch, size_t* size) {
-	return NULL;
+snet_fetch_response_body(snet_fetch_t* fetch_in, size_t* size) {
+	emscripten_fetch_t* fetch = (emscripten_fetch_t*)fetch_in;
+	*size = fetch->numBytes;
+	return fetch->data;
 }
 
 void
 snet_fetch_end(snet_fetch_t* fetch) {
+	emscripten_fetch_close((emscripten_fetch_t*)fetch);
 }
 
 #endif

@@ -611,7 +611,10 @@ snet_task_join_game(const snet_task_env_t* env) {
 		const void* resp_body = snet_fetch_response_body(fetch, &body_size);
 
 		if (status_code == 200) {
-			transport_config = resp_body;
+			char* body_copy = snet_task_alloc(env, body_size + 1);
+			memcpy(body_copy, resp_body, body_size);
+			body_copy[body_size] = '\0';
+			transport_config = body_copy;
 		} else {
 			void* body_copy = snet_task_alloc(env, body_size);
 			memcpy(body_copy, resp_body, body_size);

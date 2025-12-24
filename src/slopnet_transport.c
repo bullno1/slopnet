@@ -78,13 +78,44 @@ snet_transport_send(snet_transport_t* transport, const void* message, size_t siz
 
 #else
 
+#include <stdlib.h>
+
+struct snet_transport_s {
+	void* last_packet;
+	int handle;
+};
+
+extern int
+snet_transport_impl_connect(const char* configuration);
+
+extern void
+snet_transport_impl_disconnect(int handle);
+
+extern int
+snet_transport_impl_state(int handle);
+
+extern bool
+snet_transport_impl_recv(int handle, void** message, size_t* size);
+
+extern void
+snet_transport_impl_send(int handle, const void* message, size_t size, bool reliable);
+
 snet_transport_t*
 snet_transport_init(const char* configuration) {
-	return NULL;
+	snet_transport_t* transport = malloc(sizeof(snet_transport_t));
+	*transport = (snet_transport_t){
+		.handle = snet_transport_impl_connect(configuration),
+	};
+	return transport;
 }
 
 void
 snet_transport_cleanup(snet_transport_t* transport) {
+	snet_transport_impl_disconnect(transport->handle);
+	if (transport->last_packet) {
+		free(transport->last_packet);
+	}
+	free(transport);
 }
 
 void
@@ -93,16 +124,27 @@ snet_transport_update(snet_transport_t* transport) {
 
 snet_transport_state_t
 snet_transport_state(snet_transport_t* transport) {
-	return 0;
+	return snet_transport_impl_state(transport->handle);
 }
 
 bool
 snet_transport_recv(snet_transport_t* transport, const void** message, size_t* size) {
-	return false;
+	if (transport->last_packet) {
+		free(transport->last_packet);
+		transport->last_packet = NULL;
+	}
+
+	if (snet_transport_impl_recv(transport->handle, &transport->last_packet, size)) {
+		*message = transport->last_packet;
+		return true;
+	} else {
+		return false;
+	}
 }
 
 void
 snet_transport_send(snet_transport_t* transport, const void* message, size_t size, bool reliable) {
+	snet_transport_impl_send(transport->handle, message, size, reliable);
 }
 
 #endif

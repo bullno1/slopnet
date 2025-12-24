@@ -65,8 +65,11 @@ snet_transport_recv(snet_transport_t* transport, const void** message, size_t* s
 	int sizei;
 	if (cf_client_pop_packet(transport->client, &transport->last_packet, &sizei, &reliable)) {
 		*message = transport->last_packet;
+		*size = sizei;
 		return true;
 	} else {
+		*message = NULL;
+		*size = 0;
 		return false;
 	}
 }
@@ -138,6 +141,7 @@ snet_transport_recv(snet_transport_t* transport, const void** message, size_t* s
 		*message = transport->last_packet;
 		return true;
 	} else {
+		*message = NULL;
 		return false;
 	}
 }

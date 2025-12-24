@@ -10,8 +10,7 @@ addToLibrary({
 			const transport = { state: 1, messages: [] };
 			handles.set(handle, transport);
 
-			start(transport, config).catch((err) => {
-				console.error(err);
+			start(transport, config).finally(() => {
 				transport.state = 0;
 			});
 
@@ -25,8 +24,6 @@ addToLibrary({
 				if (transport.close) {
 					transport.close();
 				}
-
-				console.log("Closed");
 			}
 		};
 
@@ -37,15 +34,18 @@ addToLibrary({
 
 		_snet_transport_impl_recv = (handle, message_ptr, size_ptr) => {
 			const transport = handles.get(handle);
-			if (transport) {
+			if (transport && transport.state === 2) {
 				const message = transport.messages.shift();
 				if (message) {
 					const dest = _malloc(message.length);
 					HEAPU8.set(message, dest);
-					setValue(message_ptr, dest, 'number');
-					setValue(size_ptr, message.length, 'number');
+					// TODO: how to detect WASM64?
+					setValue(message_ptr, dest, 'i32');
+					setValue(size_ptr, message.length, 'i32');
 					return true;
 				} else {
+					setValue(message_ptr, 0, 'i32');
+					setValue(size_ptr, 0, 'i32');
 					return false;
 				}
 			} else {
@@ -57,7 +57,7 @@ addToLibrary({
 			const transport = handles.get(handle);
 			if (transport && transport.state === 2) {
 				if (!reliable) {
-					transport.send(HEAPU8.subarray(message, message + size));
+					transport.send(HEAPU8.subarray(message, message + size)).catch(() => {});
 				} else {
 					// TODO: implement reliable
 				}
@@ -66,7 +66,6 @@ addToLibrary({
 
 		const start = async (transport, config_ptr) => {
 			const configStr = UTF8ToString(config_ptr);
-			console.log(configStr);
 			const config = JSON.parse(UTF8ToString(config_ptr));
 			const serverCertificateHashes = config.serverCertificateHashes.map((b64) => ({
 				algorithm: 'sha-256',
@@ -82,7 +81,6 @@ addToLibrary({
 					serverCertificateHashes,
 				});
 
-				console.log("Trying", url);
 				try {
 					await wt.ready;
 				} catch (err) {
@@ -95,28 +93,30 @@ addToLibrary({
 			if (wt !== null) {
 				transport.state = 2;
 
-				wt.closed.then(() => transport.state = 0);
+				wt.closed.finally(() => transport.state = 0);
 				const writer = wt.datagrams.writable.getWriter();
 				transport.send = writer.write.bind(writer);
 				transport.close = () => {
 					if (transport.state === 2) {
 						wt.close();
 					} else if (transport.state === 1) {
-						transport.ready.then(() => wt.close());
+						wt.ready.then(() => wt.close()).catch(() => {});
 					}
 				};
 
 				const reader = wt.datagrams.readable.getReader();
 				while (true) {
-					console.log("Reading");
-					const result = await reader.read();
-					if (result.done) { break; }
+					try {
+						const result = await reader.read();
+						if (result.done) { break; }
 
-					transport.messages.push(result.value);
+						transport.messages.push(result.value);
+					} catch (err) {
+						break;
+					}
 				}
 			}
 
-			console.log("End");
 			transport.state = 0;
 		};
 	},

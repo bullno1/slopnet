@@ -89,7 +89,7 @@ main(int argc, const char* argv[]) {
 					}
 					break;
 				case SNET_EVENT_MESSAGE:
-					fprintf(stderr, "Received: %.*s\n", (int)snet_event->message.data.size, (const char*)snet_event->message.data.ptr);
+					fprintf(stdout, "Received: %.*s\n", (int)snet_event->message.data.size, (const char*)snet_event->message.data.ptr);
 					break;
 				default:
 					break;

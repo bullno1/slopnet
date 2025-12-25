@@ -10,7 +10,9 @@ addToLibrary({
 			const transport = { state: 1, messages: [] };
 			handles.set(handle, transport);
 
-			start(transport, config).finally(() => {
+			start(transport, config).catch((err) => {
+				console.error(err);
+			}).finally(() => {
 				transport.state = 0;
 			});
 
@@ -83,7 +85,9 @@ addToLibrary({
 
 				try {
 					await wt.ready;
+					const { done, value } = await wt.incomingBidirectionalStreams.getReader().read();
 				} catch (err) {
+					wt.close();
 					wt = null;
 					continue;
 				}

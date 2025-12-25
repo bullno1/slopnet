@@ -2,12 +2,22 @@
 addToLibrary({
 	$snet_transport_init__postset: 'snet_transport_init();',
 	$snet_transport_init: () => {
+		const KeepAliveMs = 2000;
+		const KeepAliveBuf = new ArrayBuffer(0);
+
 		const handles = new Map();
 		let nextHandle = 0;
 
 		_snet_transport_impl_connect = (config) => {
 			const handle = nextHandle++;
-			const transport = { state: 1, messages: [] };
+			const transport = {
+				state: 1,
+				messages: [],
+				sendDatagram: () => {},
+				sendStream: () => {},
+				close: () => {},
+				lastSend: performance.now(),
+			};
 			handles.set(handle, transport);
 
 			start(transport, config).catch((err) => {
@@ -23,9 +33,7 @@ addToLibrary({
 			const transport = handles.get(handle);
 			if (transport) {
 				handles.delete(handle);
-				if (transport.close) {
-					transport.close();
-				}
+				transport.close();
 			}
 		};
 
@@ -59,10 +67,11 @@ addToLibrary({
 			const transport = handles.get(handle);
 			if (transport && transport.state === 2) {
 				if (!reliable) {
-					transport.send(HEAPU8.subarray(message, message + size)).catch(() => {});
+					transport.sendDatagram(HEAPU8.subarray(message, message + size)).catch(() => {});
 				} else {
 					// TODO: implement reliable
 				}
+				transport.lastSend = performance.now();
 			}
 		}
 
@@ -99,8 +108,18 @@ addToLibrary({
 
 				wt.closed.finally(() => transport.state = 0);
 				const writer = wt.datagrams.writable.getWriter();
-				transport.send = writer.write.bind(writer);
+				transport.sendDatagram = writer.write.bind(writer);
+
+				const keepAliveTimer = setInterval(() => {
+					const now = performance.now();
+					if (now - transport.lastSend >= KeepAliveMs) {
+						transport.sendDatagram(KeepAliveBuf).catch(() => {});
+						transport.lastSend = now;
+					}
+				}, KeepAliveMs / 2);
+
 				transport.close = () => {
+					clearInterval(keepAliveTimer);
 					if (transport.state === 2) {
 						wt.close();
 					} else if (transport.state === 1) {

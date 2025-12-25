@@ -187,6 +187,14 @@ main(int argc, const char* argv[]) {
 								};
 								snet_send(snet, msg, false);
 							}
+
+							if (ImGui_Button("Send reliable message")) {
+								snet_blob_t msg = {
+									.ptr = "Hello reliable",
+									.size = sizeof("Hello reliable") - 1,
+								};
+								snet_send(snet, msg, true);
+							}
 						} break;
 					}
 				} break;

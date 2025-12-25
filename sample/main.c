@@ -9,8 +9,41 @@ snet_log(const char* fmt, va_list args, void* ctx) {
 	fprintf(stderr, "\n");
 }
 
+#ifdef __EMSCRIPTEN__
+
+#include <emscripten.h>
+
+EM_ASYNC_JS(void, sync_fs, (void), {
+	await new Promise((resolve) => {
+		FS.syncfs(false, resolve);
+	});
+})
+
+EM_ASYNC_JS(void, init_fs, (void), {
+	FS.mount(IDBFS, {}, "/home/web_user");
+	await new Promise((resolve, reject) => {
+		FS.syncfs(true, (err) => {
+			if (err) { reject(err); } else { resolve(); }
+		});
+	});
+})
+
+#else
+
+static void
+init_fs(void) {
+}
+
+static void
+sync_fs(void) {
+}
+
+#endif
+
 int
 main(int argc, const char* argv[]) {
+	init_fs();
+
 	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT | CF_APP_OPTIONS_FILE_SYSTEM_DONT_DEFAULT_MOUNT_BIT;
 	if (cf_is_error(cf_make_app("slopnet demo", 0, 0, 0, 800, 600, options, argv[0]))) {
 		return 1;
@@ -18,7 +51,7 @@ main(int argc, const char* argv[]) {
 
 	const char* user_dir = cf_fs_get_user_directory("bullno1", "slopnet-demo");
 	cf_fs_set_write_directory(user_dir);
-	cf_fs_mount(user_dir, "/user/", true);
+	cf_fs_mount(user_dir, "/user", true);
 
 	cf_app_set_vsync(true);
 	cf_app_init_imgui();
@@ -32,7 +65,7 @@ main(int argc, const char* argv[]) {
 
 	size_t cookie_size;
 	char* cookie = cf_fs_read_entire_file_to_memory("/user/cookie", &cookie_size);
-	if (cookie != NULL) {
+	if (cookie != NULL && cookie_size > 0) {
 		fprintf(stderr, "Logging in with cookie\n");
 		snet_login_with_cookie(snet, (snet_blob_t){ .ptr = cookie, .size = cookie_size });
 	}
@@ -51,6 +84,7 @@ main(int argc, const char* argv[]) {
 					if (snet_event->login.status == SNET_OK) {
 						fprintf(stderr, "Logged in with token: " SNET_BLOB_FMT "\n", SNET_BLOB_FMT_ARGS(snet_event->login.data));
 						cf_fs_write_string_range_to_file("/cookie", (char*)snet_event->login.data.ptr, (char*)snet_event->login.data.ptr + snet_event->login.data.size);
+						sync_fs();
 					} else if (snet_event->login.status == SNET_ERR_IO) {
 						fprintf(stderr, "Network error\n");
 					} else if (snet_event->login.status == SNET_ERR_REJECTED) {

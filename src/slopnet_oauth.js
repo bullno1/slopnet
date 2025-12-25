@@ -23,7 +23,7 @@ addToLibrary({
 		};
 
 		_snet_oauth_data_size = () => {
-			return data ? data.length * 4 + 1 : 0;
+			return data ? lengthBytesUTF8(data) : 0;
 		}
 
 		_snet_oauth_copy_data = (ptr, max_size) => {

@@ -177,8 +177,8 @@ snet_oauth_data(snet_oauth_t* oauth, size_t* size) {
 	*size =  snet_oauth_data_size();
 	if (*size == 0) { return NULL; }
 
-	void* data = snet_oauth_alloc(*size, _Alignof(char), &oauth->config);
-	snet_oauth_copy_data(data, *size);
+	void* data = snet_oauth_alloc(*size + 1, _Alignof(char), &oauth->config);
+	snet_oauth_copy_data(data, *size + 1);
 	return data;
 }
 

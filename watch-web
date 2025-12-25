@@ -2,12 +2,12 @@
 
 export BUILD_TYPE=${BUILD_TYPE:-RelWithDebInfo}
 
-./build $@ || true
+./build-web $@ || true
 
 inotifywait -r -e CLOSE_WRITE -m include src sample | \
 	while read path action file
 	do
 		clear
-		./build $@ || true
+		./build-web $@ || true
 		echo "Done"
 	done

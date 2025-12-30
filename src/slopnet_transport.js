@@ -2,20 +2,21 @@
 addToLibrary({
 	$snet_transport_init__postset: 'snet_transport_init();',
 	$snet_transport_init: () => {
-		const KeepAliveMs = 2000;
+		const KeepAliveMs = 1000;
 		const KeepAliveBuf = new ArrayBuffer(0);
 
 		const handles = new Map();
 		let nextHandle = 0;
 
-		_snet_transport_impl_connect = (config) => {
+		_snet_transport_impl_connect = (config, recvBuf, context) => {
 			const handle = nextHandle++;
 			const transport = {
 				state: 1,
-				messages: [],
 				sendDatagram: () => {},
-				sendStream: () => {},
 				close: () => {},
+				maxDatagramSize: 0,
+				recvBuf: recvBuf,
+				context: context,
 				lastSend: performance.now(),
 			};
 			handles.set(handle, transport);
@@ -43,40 +44,48 @@ addToLibrary({
 			return transport ? transport.state : 0;
 		};
 
-		_snet_transport_impl_recv = (handle, message_ptr, size_ptr) => {
+		_snet_transport_impl_max_datagram_size = (handle) => {
 			const transport = handles.get(handle);
-			if (transport && transport.state === 2) {
-				const message = transport.messages.shift();
-				if (message) {
-					const dest = _malloc(message.length);
-					HEAPU8.set(message, dest);
-					// TODO: how to detect WASM64?
-					setValue(message_ptr, dest, 'i32');
-					setValue(size_ptr, message.length, 'i32');
-					return true;
-				} else {
-					setValue(message_ptr, 0, 'i32');
-					setValue(size_ptr, 0, 'i32');
-					return false;
-				}
-			} else {
-				return false;
+			return transport ? transport.maxDatagramSize : 0;
+		}
+
+		const bufferPool = [];
+
+		const acquireSendBuffer = (data) => {
+			let buffer = bufferPool.pop();
+			if (buffer === undefined) {
+				buffer = new ArrayBuffer(2048);
 			}
+
+			const view = new Uint8Array(buffer, 0, data.length);
+			view.set(data);
+			return view;
 		};
 
-		_snet_transport_impl_send = (handle, message, size, reliable) => {
+		const acquireReadBuffer = () => {
+			let buffer = bufferPool.pop();
+			if (buffer === undefined) {
+				buffer = new ArrayBuffer(2048);
+			}
+
+			return new Uint8Array(buffer);
+		};
+
+		const releaseBuffer = (array) => {
+			bufferPool.push(array.buffer);
+		};
+
+		_snet_transport_impl_send = (handle, message, size) => {
 			const transport = handles.get(handle);
 			if (transport && transport.state === 2) {
-				if (!reliable) {
-					transport.sendDatagram(HEAPU8.subarray(message, message + size)).catch(() => {});
-				} else {
-					const frame = new Uint8Array(size + 2);
-					const view = new DataView(frame.buffer);
-					view.setUint16(0, size, true);
-					frame.set(HEAPU8.subarray(message, message + size), 2);
-
-					transport.sendStream(frame).catch(() => {});
-				}
+				// Sending is async so we need a buffer pool to copy messages
+				const copy = acquireSendBuffer(HEAPU8.subarray(message, message + size));
+				transport.sendDatagram(copy).then(() => {
+					releaseBuffer(copy);
+				}).catch((err) => {
+					console.error(err);
+					transport.close();
+				});
 				transport.lastSend = performance.now();
 			}
 		}
@@ -90,7 +99,6 @@ addToLibrary({
 			}));
 
 			let wt = null;
-			let reliableStream = null;
 
 			for (const url of config.urls) {
 				wt = new WebTransport(url, {
@@ -101,8 +109,6 @@ addToLibrary({
 
 				try {
 					await wt.ready;
-					const { done, value } = await wt.incomingBidirectionalStreams.getReader().read();
-					reliableStream = value;
 				} catch (err) {
 					wt.close();
 					wt = null;
@@ -113,12 +119,10 @@ addToLibrary({
 
 			if (wt !== null) {
 				transport.state = 2;
+				transport.maxDatagramSize = wt.datagrams.maxDatagramSize;
 
 				const datagramWriter = wt.datagrams.writable.getWriter();
 				transport.sendDatagram = datagramWriter.write.bind(datagramWriter);
-
-				const streamWriter = reliableStream.writable.getWriter();
-				transport.sendStream = streamWriter.write.bind(streamWriter);
 
 				const keepAliveTimer = setInterval(() => {
 					const now = performance.now();
@@ -147,56 +151,25 @@ addToLibrary({
 
 				wt.closed.finally(() => { transport.state = 0; transport.close(); });
 
-				const datagramReader = (async () => {
-					const reader = wt.datagrams.readable.getReader();
-					while (!abortSignal.abort) {
-						try {
-							const { value, done } = await Promise.race([reader.read(), abortPromise]);
-							if (done) { break; }
-
-							transport.messages.push(value);
-						} catch (err) {
-							break;
-						}
-					}
-				})().catch(console.err);
-
-				const streamReader = (async () => {
-					const reader = reliableStream.readable.getReader();
-					let buffer = new Uint8Array(0);
-
-					while (!abortSignal.abort) {
-						const { value, done } = await Promise.race([reader.read(), abortPromise]);
+				const reader = wt.datagrams.readable.getReader({ mode: "byob" });
+				while (!abortSignal.abort) {
+					try {
+						const { value, done } = await Promise.race([
+							reader.read(acquireReadBuffer()),
+							abortPromise
+						]);
+						if (abortSignal.abort) { break; }
 						if (done) { break; }
 
-						// Concatenate leftover bytes with new chunk
-						const chunk = value ? value : new Uint8Array(0);
-						const combined = new Uint8Array(buffer.length + chunk.length);
-						combined.set(buffer, 0);
-						combined.set(chunk, buffer.length);
-						buffer = combined;
-
-						let offset = 0;
-						while (buffer.length - offset >= 2) {
-							const view = new DataView(buffer.buffer, offset, 2);
-							const msgLength = view.getUint16(0, true);
-							if (buffer.length - offset - 2 >= msgLength) {
-								const message = buffer.slice(offset + 2, offset + 2 + msgLength);
-								transport.messages.push(message);
-								offset += 2 + msgLength;
-							} else {
-								break;
-							}
-						}
-
-						buffer = buffer.slice(offset);
+						HEAPU8.set(value, transport.recvBuf);
+						_snet_transport_process_incoming(transport.context, value.length);
+						releaseBuffer(value);
+					} catch (err) {
+						console.error(err);
+						break;
 					}
-				})().catch(console.err);
-
-				await Promise.race([
-					datagramReader,
-					streamReader,
-				]);
+				}
+				await reader.cancel().catch(() => {});
 			}
 
 			transport.state = 0;
@@ -208,6 +181,8 @@ addToLibrary({
 	snet_transport_impl_disconnect__deps: ['$snet_transport_init'],
 	snet_transport_impl_state: () => {},
 	snet_transport_impl_state__deps: ['$snet_transport_init'],
+	snet_transport_impl_max_datagram_size: () => {},
+	snet_transport_impl_max_datagram_size__deps: ['$snet_transport_init'],
 	snet_transport_impl_recv: () => {},
 	snet_transport_impl_recv__deps: ['$snet_transport_init'],
 	snet_transport_impl_send: () => {},

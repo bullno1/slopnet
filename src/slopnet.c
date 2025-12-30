@@ -13,7 +13,7 @@
 #include "slopnet_transport.h"
 #include "slopnet_oauth.h"
 
-#define BARENA_API static
+#define BARENA_API static inline
 #include "barena.h"
 
 #define SNET_URL_FMT_PREFIX "https://%s:%d%s"
@@ -222,7 +222,6 @@ snet_init(const snet_config_t* config_in) {
 	};
 
 	barena_pool_init(&snet->arena_pool, 1);
-	(void)barena_snapshot;
 
 	snet_task_init(snet, &snet->auth_task);
 	snet_task_init(snet, &snet->create_game_task);

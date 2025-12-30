@@ -6,9 +6,10 @@
 // They should be safe enough
 // Howevever, negotiation based on maxDatagramSize might be better
 #define SNET_WT_SEQUENCE_BUF_SIZE 32
-#define SNET_WT_RESEND_DELAY 0.1
+#define SNET_WT_RESEND_DELAY 0.2
 #define SNET_WT_MAX_FRAGMENTS 32
-#define SNET_WT_FRAGMENT_ABOVE 1024
+#define SNET_WT_FRAGMENT_ABOVE 1015  // Max datagram size keeps returning 1024
+									 // and the reliable header is at most 9 bytes
 #define SNET_WT_FRAGMENT_SIZE 1000
 #define SNET_WT_MAX_INFLIGHT_RELIABLE_MESSAGES 32
 
@@ -52,6 +53,8 @@ struct snet_wt_s {
 	snet_wt_reliable_header_t next_incoming_reliable_header;
 	snet_wt_fragment_t* incoming_reliable_messages[SNET_WT_MAX_INFLIGHT_RELIABLE_MESSAGES * 2];
 
+	bool processing;
+	int deferred_send_size;
 	uint8_t send_buf[SNET_WT_MAX_MESSAGE_SIZE];
 };
 
@@ -146,6 +149,26 @@ snet_wt_cleanup_reliable_message(snet_wt_t* swt, snet_wt_outgoing_reliable_messa
 	snet_wt_free(&swt->config, msg);
 }
 
+static void
+snet_wt_flush_deferred_send(snet_wt_t* swt) {
+	if (swt->deferred_send_size > 0) {
+		reliable_endpoint_send_packet(swt->endpoint, swt->send_buf, swt->deferred_send_size);
+		swt->deferred_send_size = 0;
+	}
+}
+
+static void
+snet_wt_maybe_send(snet_wt_t* swt, const void* buf, int size) {
+	if (swt->processing) {
+		// If this send is made right inside a processing call as a response,
+		// defer sending for a bit so we can ack the same message it is responding
+		// to
+		swt->deferred_send_size = size;
+	} else {
+		reliable_endpoint_send_packet(swt->endpoint, buf, size);
+	}
+}
+
 snet_wt_t*
 snet_wt_init(const snet_wt_config_t* config, double time) {
 	snet_wt_t* swt = snet_wt_malloc(config, sizeof(snet_wt_t));
@@ -159,6 +182,9 @@ snet_wt_init(const snet_wt_config_t* config, double time) {
 
 	swt->next_incoming_reliable_header.u8 = 0;
 	memset(swt->incoming_reliable_messages, 0, sizeof(swt->incoming_reliable_messages));
+
+	swt->deferred_send_size = 0;
+	swt->processing = false;
 
 	struct reliable_config_t endpoint_conf;
 	reliable_default_config(&endpoint_conf);
@@ -198,6 +224,8 @@ snet_wt_cleanup(snet_wt_t* swt) {
 
 bool
 snet_wt_send(snet_wt_t* swt, const void* message, size_t size, bool reliable) {
+	snet_wt_flush_deferred_send(swt);
+
 	if (reliable) {
 		if (size > SNET_WT_MAX_MESSAGE_SIZE - 1) { return false; }
 
@@ -221,25 +249,26 @@ snet_wt_send(snet_wt_t* swt, const void* message, size_t size, bool reliable) {
 		memcpy(&swt->send_buf[1], message, size);
 
 		// Send the message
-		reliable_endpoint_send_packet(swt->endpoint, swt->send_buf, (int)(size + 1));
+		snet_wt_maybe_send(swt, swt->send_buf, (int)(size + 1));
+		return true;
 	} else {
-		if (size > SNET_WT_MAX_MESSAGE_SIZE - 1) {
-			return false;
-		}
+		if (size > SNET_WT_MAX_MESSAGE_SIZE - 1) { return false; }
 
 		swt->send_buf[0] = 0;  // Unreliable
 		memcpy(&swt->send_buf[1], message, size);
 
 		swt->current_outgoing_reliable_message = NULL;  // Don't store fragments
-		reliable_endpoint_send_packet(swt->endpoint, swt->send_buf, (int)(size + 1));
+		snet_wt_maybe_send(swt, swt->send_buf, (int)(size + 1));
+		return true;
 	}
-
-	return true;
 }
 
 void
 snet_wt_process_incoming(snet_wt_t* swt, const void* packet, size_t size) {
+	swt->processing = true;
 	reliable_endpoint_receive_packet(swt->endpoint, packet, (int)size);
+	swt->processing = false;
+	snet_wt_flush_deferred_send(swt);
 
 	// Check acks for reliable messages
 	int num_acks;
@@ -275,7 +304,6 @@ snet_wt_update(snet_wt_t* swt, double time) {
 	swt->time = time;
 
 	// Resend unacked messages
-	/*double time = swt->time;*/
 	for (
 		int msg_index = 0;
 		msg_index < swt->num_outgoing_reliable_messages;

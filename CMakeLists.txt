@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(slopnet)
 
+option(SLOPNET_BUILD_CF "Should it build CF" ON)
+
 # Fix output dir
 set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/$<CONFIG>)

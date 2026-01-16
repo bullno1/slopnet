@@ -131,6 +131,9 @@ snet_cleanup(snet_t* snet);
 void
 snet_update(snet_t* snet);
 
+size_t
+snet_max_message_size(void);
+
 const snet_event_t*
 snet_next_event(snet_t* snet);
 

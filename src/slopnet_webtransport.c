@@ -6,14 +6,14 @@
 // They should be safe enough
 // Howevever, negotiation based on maxDatagramSize might be better
 #define SNET_WT_SEQUENCE_BUF_SIZE 32
-#define SNET_WT_RESEND_DELAY 0.2
 #define SNET_WT_MAX_FRAGMENTS 32
-#define SNET_WT_FRAGMENT_ABOVE 1015  // Max datagram size keeps returning 1024
-									 // and the reliable header is at most 9 bytes
+#define SNET_WT_FRAGMENT_ABOVE 1015  /* Max datagram size keeps returning 1024 */
+									 /* and the reliable header is at most 9 bytes */
 #define SNET_WT_FRAGMENT_SIZE 1000
 #define SNET_WT_MAX_INFLIGHT_RELIABLE_MESSAGES 32
 
 #define SNET_WT_MAX_MESSAGE_SIZE (SNET_WT_MAX_FRAGMENTS * SNET_WT_FRAGMENT_SIZE)
+#define SNET_WT_RESEND_DELAY 0.2
 
 typedef union {
 	struct {

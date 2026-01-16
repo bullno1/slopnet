@@ -18,6 +18,9 @@ snet_transport_init(const char* configuration);
 void
 snet_transport_cleanup(snet_transport_t* transport);
 
+size_t
+snet_transport_max_message_size(void);
+
 void
 snet_transport_update(snet_transport_t* transport);
 

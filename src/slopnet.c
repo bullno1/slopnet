@@ -778,5 +778,10 @@ snet_list_games(snet_t* snet) {
 	snet_task_begin(snet, &snet->list_games_task, snet_task_list_games, NULL, 0);
 }
 
+size_t
+snet_max_message_size(void) {
+	return snet_transport_max_message_size();
+}
+
 #define BLIB_IMPLEMENTATION
 #include "barena.h"

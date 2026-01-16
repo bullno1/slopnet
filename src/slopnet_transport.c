@@ -79,6 +79,11 @@ snet_transport_send(snet_transport_t* transport, const void* message, size_t siz
 	cf_client_send(transport->client, message, size, reliable);
 }
 
+size_t
+snet_transport_max_message_size(void) {
+	return 1100 * 4;
+}
+
 #else
 
 #include <stdlib.h>
@@ -227,6 +232,11 @@ snet_transport_recv(snet_transport_t* transport, const void** message, size_t* s
 void
 snet_transport_send(snet_transport_t* transport, const void* message, size_t size, bool reliable) {
 	snet_wt_send(transport->wt, message, size, reliable);
+}
+
+size_t
+snet_transport_max_message_size(void) {
+	return 1000 * 4;
 }
 
 #endif
